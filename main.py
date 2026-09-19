@@ -2,7 +2,7 @@
 # sending proper HTTP error responses, and enabling CORS (allowing comms between frontend and backend)
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, field_validator
 from enum import Enum
 import re
 from typing import Optional, List
@@ -13,6 +13,8 @@ from sentence_transformers import SentenceTransformer
 
 # handle requests, file extraction, hashing and timestamps
 import requests
+import httpx
+from starlette.concurrency import run_in_threadpool
 import os
 import PyPDF2
 from pptx import Presentation
@@ -111,20 +113,27 @@ async def rate_limit_handler(request, exc):
 
 
 # configuring CORS - allowing any frontend to call the api without restrictions
+# Note: allow_credentials=False is required alongside allow_origins=["*"];
+# browsers reject a wildcard origin combined with credentials=True per spec.
+# We authenticate via the X-API-Key header, not cookies, so this is fine.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # mounting static folder
 app.mount("/static", StaticFiles(directory="static"), name = "static")
-# serve index.html at root
+# serve the new frontend's landing page at root (replaces the old demo index.html)
 @app.get("/")
 def serve_frontend():
-    return FileResponse("static/index.html")
+    return FileResponse("static/landingpage.html")
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return FileResponse("static/favicon.svg")
 
 
 # loading the embedder, a place to store the uploaded docs
@@ -176,6 +185,30 @@ class Question(BaseModel):
     options: Optional[List[str]] = None
     answer: str
     explanation: str
+
+# --- Structured schema for /generate/questions (Day 2 rewrite, MCQ-only) ---
+# Mirrors study.html's practiceData.mcq shape exactly, so the frontend can
+# consume the response with zero field-name translation.
+class MCQItem(BaseModel):
+    question: str
+    options: List[str] = Field(..., min_length=4, max_length=4)
+    correct: int = Field(..., ge=0, le=3)  # 0-based index into options
+
+    @field_validator("options")
+    @classmethod
+    def options_must_be_real_answers(cls, options: List[str]) -> List[str]:
+        for opt in options:
+            cleaned = opt.strip()
+            if cleaned.isdigit():
+                raise ValueError(f"Option '{opt}' is just a number, not a real answer choice")
+            if len(cleaned) < 3:
+                raise ValueError(f"Option '{opt}' is too short to be a real answer choice")
+        if len({o.strip().lower() for o in options}) < len(options):
+            raise ValueError("Duplicate options found in the same question")
+        return options
+
+class MCQSet(BaseModel):
+    mcq: List[MCQItem]
 
 class StudyMaterial(BaseModel):
     document_id: str
@@ -283,7 +316,7 @@ def parse_flashcards_by_lines(response, doc):
         elif line.startswith("BACK:"):
             current_back = line.replace("BACK:", "").strip()
         
-        elif current_back is not None and line is not line.startswith(("FRONT:", "BACK:", "---")):
+        elif current_back is not None and not line.startswith(("FRONT:", "BACK:", "---")):
             current_back += " " + line
             
     if current_front and current_back:
@@ -356,22 +389,32 @@ def create_faiss_index(chunks: List[str]):
 
 # Sends prompt to Ollama API and retrieves AI-generated response, handles timeouts and errors
 # Allows us to generate summaries, flashcards, questions, and chat responses
-def generate_with_ollama(prompt: str, model: str = "llama3.2") -> str:        
-    
+async def generate_with_ollama(prompt: str, model: str = "llama3.2", format_schema: dict = None, options_override: dict = None) -> str:
+
+    payload_options = {
+        'temperature': 0.7,
+        'num_predict': 1000
+    }
+    if options_override:
+        payload_options.update(options_override)
+
+    payload = {
+        'model': model,
+        'prompt': prompt,
+        'stream': False,
+        'options': payload_options
+    }
+    if format_schema:
+        # Constrains Ollama's output to match this JSON schema, instead of
+        # just hoping the prompt's formatting instructions get followed.
+        payload['format'] = format_schema
+
     try:
-        response = requests.post(
-            'http://localhost:11434/api/generate',
-            json={
-                'model': model,
-                'prompt': prompt,
-                'stream': False,
-                'options':{
-                    'temperature':0.7,
-                    'num_predict':1000
-                }
-            },
-            timeout=120
-        )
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(
+                'http://localhost:11434/api/generate',
+                json=payload
+            )
         if response.status_code == 200:
             return response.json()['response']
         else:
@@ -382,7 +425,7 @@ def generate_with_ollama(prompt: str, model: str = "llama3.2") -> str:
 # Function to extract topics from text using AI
 # Analyzes doc, extracts 3-5 main topics, and returns them as a list
 # Used for metadata, flashcards, and question generation
-def extract_topics(text: str) -> List[str]:
+async def extract_topics(text: str) -> List[str]:
     # """Extract main topics from text (temporary - no AI)."""
     # # Simple keyword extraction until Ollama is set up
     # keywords = ['biology', 'chemistry', 'physics', 'math', 'history', 
@@ -413,7 +456,7 @@ Text:
 
 Topics:"""
     try:
-        response = generate_with_ollama(prompt)
+        response = await generate_with_ollama(prompt)
         topics = [t.strip() for t in response.split(',')]
         return topics[:5]
     except Exception as e:
@@ -438,9 +481,9 @@ def verify_api_key(x_api_key: str = Header(None)):
             )
     return True
 
-# Root endpoint - basic info about the API
+# API info endpoint - basic info about the API
 # confirms the API is running and provides version and feature list
-@app.get("/")
+@app.get("/api/info")
 def root():
     return {"message": "Welcome to the AI Study Helper API!",
             "version": "1.0.0",
@@ -528,8 +571,10 @@ async def upload_document(request: Request, file: UploadFile = File(...)):
                 status_code=400, detail="Document text could not be chunked properly."
             )
         
-        index, embeddings = create_faiss_index(chunks)
-        topics = extract_topics(text)
+        # Both do CPU-bound / blocking work, so run them in a worker thread
+        # to avoid freezing the event loop during upload
+        index, embeddings = await run_in_threadpool(create_faiss_index, chunks)
+        topics = await extract_topics(text)
         
         # storing document info in the in-memory db
         documents_db[doc_id] = {
@@ -553,6 +598,9 @@ async def upload_document(request: Request, file: UploadFile = File(...)):
                 "topics_found": topics,
                 "message": "Document uploaded and processed successfully."
                 }
+    except HTTPException:
+        # Let intentional HTTP errors (400/409/413/etc.) pass through unchanged
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Error processing document: {str(e)}"
@@ -603,7 +651,7 @@ Content:
 {text}
     
 Summary:"""
-    summary = generate_with_ollama(prompt)
+    summary = await generate_with_ollama(prompt)
     logger.info(f"Summary generated for Document ID: {req.document_id}")
     
     return {"document_id": req.document_id,
@@ -644,7 +692,7 @@ Content to create flashcards from:
 {text}
 
 Flashcards:"""
-    response = generate_with_ollama(prompt)
+    response = await generate_with_ollama(prompt)
     
     logger.info(f"Ollama response length: {len(response)}, First 200 chars: {response[:200]}")
     
@@ -652,7 +700,7 @@ Flashcards:"""
     cards = []
     
     if '---' in response:
-        raw_cards = response.split()
+        raw_cards = response.split('---')
         cards = parse_flashcards_by_separator(raw_cards, doc)
         
     if len(cards) == 0:
@@ -675,70 +723,72 @@ Flashcards:"""
 @app.post("/generate/questions", dependencies=[Depends(verify_api_key)])
 @limiter.limit("10/minute") # limit to 10 question requests per minute
 async def generate_questions(request: Request, req: StudyMaterialRequest):
-    """ Generate practice questions for the specified document."""
-    
+    """ Generate multiple-choice practice questions for the specified document,
+    using Ollama's structured outputs feature so the response is guaranteed to
+    match MCQSet instead of being parsed out of free-form text. """
+
     logger.info(f"Question generation request for Document ID: {req.document_id}")
-    
+
     if req.document_id not in documents_db:
         logger.warning(f"Document not found for question generation - ID: {req.document_id}")
         raise HTTPException(status_code=404, detail="Document not found.")
-    
+
     doc = documents_db[req.document_id]
-    text = sanitize_for_llm(doc["text"], max_length=3000)# limit to first 3000 chars for prompt size
-    
-    prompt = f"""Create 5 practice questions based on the following study material.
-Format EXACTLY as:
-Q: [question]
-TYPE: [multiple_choice/short_answer]
-OPTIONS: [A) option1, B) option2, C) option3, D) option4] (only for multiple_choice)
-ANSWER: [correct answer]
-EXPLANATION: [brief explanation of the answer, why it's correct]
----
-(repeat for each question)
+    text = sanitize_for_llm(doc["text"], max_length=3000)  # limit to first 3000 chars for prompt size
 
-Content:
+    prompt = f"""Based on the study material below, generate 8 multiple-choice questions.
+Each question must have exactly 4 options and the 0-based index of the correct option.
+
+Only use information found in the study material below. Do not invent facts,
+terms, or numbers that aren't supported by it.
+
+Every option must be a complete, specific answer phrase of at least a few
+words — for example "Define your username for the repository", not "1",
+"2", "Option A", or any other bare number, letter, or placeholder text.
+If the source material is terse (e.g. a list of commands or short
+definitions), invent plausible-sounding but incorrect variations of the
+correct answer as distractors, rather than leaving an option empty or vague.
+
+Study material:
 {text}
+"""
 
-Questions:"""
-    response = generate_with_ollama(prompt)
-    
-    # parsing the response into question objects
-    questions = []
-    q_texts = response.split('---')
+    MAX_ATTEMPTS = 3
+    parsed = None
+    last_error = None
 
-    for block in q_texts:
-        lines = [line.strip() for line in block.strip().split('\n') if line.strip()]
-        
-        q = {}
-        for line in lines:
-            if line.startswith("Q:"):
-                q["question"] = line.replace("Q:", "").strip()
-            elif line.startswith("TYPE:"):
-                q["type"] = line.replace("TYPE:", "").strip().lower()
-            elif line.startswith("OPTIONS:"):
-                options_str = line.replace("OPTIONS:", "").strip()
-                if options_str:
-                    q["options"] = [opt.strip() for opt in options_str.split(",")]
-            elif line.startswith("ANSWER:"):
-                q["answer"] = line.replace("ANSWER:", "").strip()
-            elif line.startswith("EXPLANATION:"):
-                q["explanation"] = line.replace("EXPLANATION:", "").strip()
-                
-        if q.get("type") != "multiple_choice":
-            q.pop("options", None)  # remove options if not multiple choice
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        response_text = await generate_with_ollama(
+            prompt,
+            format_schema=MCQSet.model_json_schema(),
+            options_override={
+                'temperature': 0.3,   # low — single-format task, prioritize grounded correctness over variety
+                'num_predict': 1200,
+            }
+        )
 
-        if "question" in q and "type" in q and "answer" in q:
-            q.setdefault("type", "short_answer")
-            q.setdefault("explanation", "")
-            questions.append(q)
-            
-    questions = questions[:5]  # limit to first 5 questions
-    
+        if response_text.startswith("Error:"):
+            logger.error(f"Ollama error during question generation (attempt {attempt}): {response_text}")
+            raise HTTPException(status_code=502, detail="The AI model is unavailable. Please try again.")
+
+        try:
+            parsed = MCQSet.model_validate_json(response_text)
+            break  # got a valid, well-formed set — stop retrying
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Question validation failed on attempt {attempt}/{MAX_ATTEMPTS}: {e}")
+
+    if parsed is None:
+        logger.error(f"All {MAX_ATTEMPTS} attempts failed validation for Document ID {req.document_id}: {last_error}")
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to generate valid questions after multiple attempts. This document's content may be too sparse for good multiple-choice distractors — try again, or try a document with more descriptive text."
+        )
+
     logger.info(f"Questions generated for Document ID: {req.document_id}")
     return {"document_id": req.document_id,
             "material_type": "questions",
-            "questions": questions,
-            "count": len(questions),
+            "mcq": [item.model_dump() for item in parsed.mcq],
             "created_at": datetime.now().isoformat()
             }
 
@@ -757,7 +807,8 @@ async def chat_with_document(request: Request, req: ChatRequest):
     doc = documents_db[req.document_id]
     
     # search for relevant chunks using FAISS
-    query_vector = embedder.encode([req.question], convert_to_tensor=False)
+    # embedder.encode is blocking, so run it off the event loop
+    query_vector = await run_in_threadpool(embedder.encode, [req.question], convert_to_tensor=False)
     query_vector = np.array(query_vector).astype("float32")
     faiss.normalize_L2(query_vector)
     
@@ -776,7 +827,7 @@ Question: {req.question}
 Provide a clear, educational answer. If the context does not contain the answer, say so.
 
 Answer:"""
-    answer = generate_with_ollama(prompt)
+    answer = await generate_with_ollama(prompt)
     
     logger.info(f"Chat response generated for Document ID: {req.document_id}, Confidence Score: {float(scores[0][0])}")
     return {"document_id": req.document_id,
@@ -803,6 +854,15 @@ def delete_document(request: Request, document_id: str):
     
     logger.info(f"Document deleted successfully - ID: {document_id}, Filename: {filename}")
     return {"message": f"Document '{filename}' and its data have been deleted."}
+
+# Catch-all mount for the rest of the frontend's static files (upload.html,
+# study.html, css/styles.css, assets/...). Registered LAST, after every API
+# route above, so it only serves paths that don't match an actual endpoint —
+# it never shadows /upload, /generate/*, /chat, etc. This is what makes
+# relative links like href="upload.html" and href="css/styles.css" resolve
+# correctly when the page is loaded from "/" instead of needing "/static/..."
+# in every href.
+app.mount("/", StaticFiles(directory="static"), name="static-root")
 
 # To run the app, use the command:
 # uvicorn api:app --host

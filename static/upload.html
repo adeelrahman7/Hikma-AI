@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Upload Document | Hikma AI</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"> -->
+   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Readex+Pro:wght@500;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="/static/css/styles.css" />
+</head>
+<body>
+
+  <div id="main-nav"></div>
+  <div id="nav-root"></div>
+  <script src="/static/js/nav.js"></script>
+
+  <section class="hero">
+    <h1>Upload Your Study Material</h1>
+
+    <p class="subtitle">
+      Upload a PDF, PowerPoint, or Word document and let AI generate
+      summaries, flashcards, and practice questions for you.
+    </p>
+
+    <div class="upload-box">
+      <div class="upload-section" id="uploadSection" onclick="document.getElementById('fileInput').click()">
+        <div class="upload-icon">📄</div>
+        <h3>Drop your document here or click to browse</h3>
+        <p class="upload-hint">Supports PDF, PowerPoint, and Word documents</p>
+        <input type="file" id="fileInput" accept=".pdf,.pptx,.docx" onchange="uploadDocument(event)" />
+      </div>
+    </div>
+  </section>
+
+  <script>
+    const API_URL = "http://localhost:8000";
+
+    // If your .env has API_KEY_ENABLED=true, set your key here.
+    // Leave as null while it's disabled locally.
+    const API_KEY = null;
+
+    const uploadSection = document.getElementById("uploadSection");
+
+    uploadSection.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      uploadSection.classList.add("dragover");
+    });
+    uploadSection.addEventListener("dragleave", () => {
+      uploadSection.classList.remove("dragover");
+    });
+    uploadSection.addEventListener("drop", (e) => {
+      e.preventDefault();
+      uploadSection.classList.remove("dragover");
+      const files = e.dataTransfer.files;
+      if (files.length > 0) {
+        handleFile(files[0]);
+      }
+    });
+
+    function uploadDocument(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      handleFile(file);
+    }
+
+    function showLoading() {
+      document.getElementById("uploadSection").innerHTML =
+        '<div class="loading"><div class="spinner"></div><p>Processing document...</p></div>';
+    }
+
+    // Resets the dropzone back to its original clickable state so the user can retry.
+    function resetUploadSection() {
+      document.getElementById("uploadSection").innerHTML = `
+        <div class="upload-icon">📄</div>
+        <h3>Drop your document here or click to browse</h3>
+        <p class="upload-hint">Supports PDF, PowerPoint, and Word documents</p>
+        <input type="file" id="fileInput" accept=".pdf,.pptx,.docx" onchange="uploadDocument(event)" />
+      `;
+    }
+
+    function showUploadError(message) {
+      document.getElementById("uploadSection").innerHTML = `
+        <div class="upload-icon">⚠️</div>
+        <h3>Upload failed</h3>
+        <p class="upload-hint">${message}</p>
+        <button class="cta-btn upload-retry-btn" type="button" onclick="resetUploadSection()">Try again</button>
+      `;
+    }
+
+    // Maps your backend's specific error responses to a message someone can actually act on.
+    function messageForStatus(status, detail) {
+      switch (status) {
+        case 400:
+          return detail || "That file type isn't supported, or no text could be found in it.";
+        case 409:
+          return "This exact document has already been uploaded.";
+        case 413:
+          return "That file is too large. Max size is 10 MB.";
+        case 429:
+          return "Too many uploads right now — wait a minute and try again.";
+        case 500:
+          return "Something went wrong processing that document on our end.";
+        default:
+          return detail || "Something went wrong. Please try again.";
+      }
+    }
+
+    function handleFile(file) {
+      showLoading();
+      uploadFile(file);
+    }
+
+    async function uploadFile(file) {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const headers = {};
+      if (API_KEY) {
+        headers["X-API-Key"] = API_KEY;
+      }
+
+      try {
+        const response = await fetch(`${API_URL}/upload`, {
+          method: "POST",
+          headers,
+          body: formData
+        });
+
+        let data = null;
+        try {
+          data = await response.json();
+        } catch {
+          // response wasn't JSON — fall through to generic error below
+        }
+
+        if (!response.ok) {
+          showUploadError(messageForStatus(response.status, data?.detail));
+          return;
+        }
+
+        if (!data?.document_id) {
+          showUploadError("The server didn't return a document ID. Please try again.");
+          return;
+        }
+
+        localStorage.setItem("documentId", data.document_id);
+        localStorage.setItem("documentName", data.filename || file.name);
+        localStorage.setItem("documentTopics", JSON.stringify(data.topics_found || []));
+
+        window.location.href = "study.html";
+      } catch (error) {
+        console.error("Upload failed:", error);
+        showUploadError("Couldn't reach the server. Is the backend running?");
+      }
+    }
+  </script>
+</body>
+</html>
