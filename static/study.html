@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title> Study | Hikma AI </title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"> -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Readex+Pro:wght@500;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="/static/css/styles.css" />
+</head>
+<body>
+
+  <div id="main-nav"></div>
+  <div id="nav-root"></div>
+  <script src="/static/js/nav.js"></script>
+
+  <nav class="study-nav-bar" id="studyNavBar">
+    <div class="study-nav-pill">
+      <button class="tab active" onclick="showTab('summary', this)">Summary</button>
+      <button class="tab" onclick="showTab('flashcards', this)">Flashcards</button>
+      <button class="tab" onclick="showTab('questions', this)">Questions</button>
+      <button class="tab" onclick="showTab('chat', this)">Q&amp;A</button>
+    </div>
+  </nav>
+
+  <section class="empty-state" id="emptyState" style="display: none;">
+    <div class="empty-state-icon">📄</div>
+    <h2>No document yet</h2>
+    <p>Upload a study document to generate a summary, flashcards, and practice questions.</p>
+    <a href="upload.html" class="cta-btn">Upload a document</a>
+  </section>
+
+  <main class="study-container" id="studyContainer">
+
+    <!-- ===================== SUMMARY ===================== -->
+    <section id="summary" class="tab-panel active summary-container">
+      <div class="summary-header">
+        <h2>Summary</h2>
+        <p class="summary-subtitle">AI-generated overview</p>
+      </div>
+
+      <div class="summary-body" id="summaryBody">
+        <div class="generate-prompt">
+          <p>Ready to generate an AI summary of <strong id="summaryDocLabel">your document</strong>.</p>
+          <button class="cta-btn" type="button" onclick="fetchSummary()">Generate Summary</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== FLASHCARDS ===================== -->
+    <section id="flashcards" class="tab-panel flashcards-container">
+      <div>
+        <div class="flashcard-container">
+          <button class="arrow left" aria-label="Previous card">‹</button>
+
+          <div class="flashcard">
+            <h3 class="flashcard-question"></h3>
+            <p class="flashcard-answer">Click to reveal answer.</p>
+            <div class="flashcard-actions">
+              <button class="fc-btn learning" data-status="learning" type="button">Still learning</button>
+              <button class="fc-btn got" data-status="got" type="button">Got it</button>
+            </div>
+          </div>
+
+          <button class="arrow right" aria-label="Next card">›</button>
+        </div>
+        <p class="flashcard-counter" id="flashcardCounter"></p>
+        <p class="flashcard-score" id="flashcardScore"></p>
+        <p class="flashcard-hint">Click the card to flip it, then mark it</p>
+      </div>
+    </section>
+
+    <!-- ===================== QUESTIONS ===================== -->
+    <section id="questions" class="tab-panel questions-container">
+      <div class="questions-header">
+        <h2>Practice Questions</h2>
+        <p class="summary-subtitle">Multiple choice</p>
+      </div>
+
+      <p class="practice-progress" id="practiceProgress"></p>
+      <p class="practice-score" id="practiceScoreDisplay"></p>
+      <div id="questionCardHost"></div>
+
+      <div class="question-nav">
+        <button id="prevQuestionBtn">‹ Previous</button>
+        <button id="nextQuestionBtn">Next ›</button>
+      </div>
+    </section>
+
+    <!-- ===================== CHAT / Q&A ===================== -->
+    <section id="chat" class="tab-panel">
+      <div class="chat-container">
+        <div class="chat-header">
+          <h2>Ask about your document</h2>
+          <p>Answers are grounded in <span id="chatDocLabel">your document</span></p>
+        </div>
+
+        <div class="chat-messages" id="chatMessages">
+          <div class="chat-bubble bot" id="chatGreeting">
+            Hi! Ask me anything about your document, or tap a suggestion below.
+          </div>
+        </div>
+
+        <div class="chat-suggestions" id="chatSuggestions">
+          <button class="chip" type="button">Summarize this in one sentence</button>
+          <button class="chip" type="button">What's the most important concept here?</button>
+          <button class="chip" type="button">Explain this in simpler terms</button>
+        </div>
+
+        <div class="chat-input-row">
+          <input type="text" id="chatInput" placeholder="Ask a question about your document..." />
+          <button class="chat-send-btn" id="chatSendBtn" aria-label="Send message">→</button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    // ===================== Tabs =====================
+    function showTab(tabId, clickedTab) {
+      document.querySelectorAll(".tab-panel").forEach(panel => panel.classList.remove("active"));
+      document.querySelectorAll(".tab").forEach(tab => tab.classList.remove("active"));
+      document.getElementById(tabId).classList.add("active");
+      clickedTab.classList.add("active");
+    }
+
+    const documentId = localStorage.getItem("documentId");
+    const documentName = localStorage.getItem("documentName") || "your document";
+    const hasDocument = Boolean(documentId);
+
+    if (!hasDocument) {
+      document.getElementById("studyNavBar").style.display = "none";
+      document.getElementById("studyContainer").style.display = "none";
+      document.getElementById("emptyState").style.display = "flex";
+    } else {
+      console.log("Loaded document:", documentId);
+    }
+
+    const API_URL = "http://localhost:8000";
+
+    // If your .env has API_KEY_ENABLED=true, set your key here — same as upload.html.
+    const API_KEY = null;
+
+    function authHeaders() {
+      const headers = { "Content-Type": "application/json" };
+      if (API_KEY) {
+        headers["X-API-Key"] = API_KEY;
+      }
+      return headers;
+    }
+
+    function messageForStatus(status, detail) {
+      switch (status) {
+        case 404:
+          return "This document couldn't be found on the server — it may have expired after a server restart. Try uploading it again.";
+        case 502:
+          return detail || "The AI model is unavailable or produced an invalid response. Please try again.";
+        case 429:
+          return "Too many requests right now — wait a moment and try again.";
+        case 500:
+          return "Something went wrong generating this on the server.";
+        default:
+          return detail || "Something went wrong. Please try again.";
+      }
+    }
+
+    // Shared POST helper for /generate/* endpoints. Returns the parsed JSON on
+    // success, or throws an Error with a message ready to show the user.
+    async function postToBackend(path, materialType) {
+      let response;
+      try {
+        response = await fetch(`${API_URL}${path}`, {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({ document_id: documentId, material_type: materialType })
+        });
+      } catch (networkError) {
+        throw new Error("Couldn't reach the server. Is the backend running?");
+      }
+
+      let data = null;
+      try {
+        data = await response.json();
+      } catch {
+        // not JSON — fall through to status-based message below
+      }
+
+      if (!response.ok) {
+        throw new Error(messageForStatus(response.status, data?.detail));
+      }
+      return data;
+    }
+
+    // ===================== Summary =====================
+    const summaryBody = document.getElementById("summaryBody");
+
+    // The backend returns summary content as plain text (often with "-" or
+    // "*" bullet lines from the LLM's own formatting), not HTML — this does
+    // a light conversion so bullet-style lines render as an actual <ul>.
+    function formatSummaryContent(text) {
+      const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 0);
+      let html = "";
+      let inList = false;
+
+      for (const line of lines) {
+        const isBullet = /^[-*•]\s+/.test(line);
+        if (isBullet) {
+          if (!inList) { html += "<ul>"; inList = true; }
+          html += `<li>${line.replace(/^[-*•]\s+/, "")}</li>`;
+        } else {
+          if (inList) { html += "</ul>"; inList = false; }
+          html += `<p>${line}</p>`;
+        }
+      }
+      if (inList) html += "</ul>";
+      return html;
+    }
+
+    function showSummaryError(message) {
+      summaryBody.innerHTML = `
+        <div class="loading">
+          <p>⚠️ ${message}</p>
+          <button class="check-btn" type="button" onclick="fetchSummary()">Try again</button>
+        </div>
+      `;
+    }
+
+    async function fetchSummary() {
+      summaryBody.innerHTML = `<div class="loading"><div class="spinner"></div><p>Generating summary...</p></div>`;
+      try {
+        const data = await postToBackend("/generate/summary", "summary");
+        summaryBody.innerHTML = formatSummaryContent(data.content || "No summary content was returned.");
+      } catch (err) {
+        showSummaryError(err.message);
+      }
+    }
+
+    // ===================== Flashcards =====================
+    let flashcards = [
+      { question: "1. How many chambers does the human heart have?", answer: "The human heart has four chambers." },
+      { question: "2. What are the four chambers of the heart?", answer: "Right atrium, right ventricle, left atrium, and left ventricle." },
+      { question: "3. Which chamber receives oxygen-poor blood from the body?", answer: "The right atrium." },
+      { question: "4. Which chamber pumps oxygen-poor blood to the lungs?", answer: "The right ventricle." },
+      { question: "5. Which chamber receives oxygen-rich blood from the lungs?", answer: "The left atrium." },
+      { question: "6. Which chamber pumps oxygen-rich blood to the rest of the body?", answer: "The left ventricle." },
+      { question: "7. Which chamber has the thickest muscular wall?", answer: "The left ventricle." },
+      { question: "8. What is the main function of the atria?", answer: "The atria receive blood entering the heart." },
+      { question: "9. What is the main function of the ventricles?", answer: "The ventricles pump blood out of the heart." },
+      { question: "10. What structure separates the left and right sides of the heart?", answer: "The septum." },
+      { question: "11. Why are heart valves important?", answer: "They prevent blood from flowing backward." },
+      { question: "12. Which blood vessels carry oxygen-rich blood into the heart?", answer: "The pulmonary veins." },
+      { question: "13. Which blood vessel carries oxygen-rich blood away from the heart?", answer: "The aorta." },
+      { question: "14. Does the right side of the heart handle oxygen-rich or oxygen-poor blood?", answer: "It handles oxygen-poor blood." },
+      { question: "15. Why is the left ventricle stronger than the other chambers?", answer: "Because it must pump blood throughout the entire body." }
+    ];
+
+    let currentCard = 0;
+    let showingAnswer = false;
+    let flashcardStatus = new Array(flashcards.length).fill(null); // null | "got" | "learning"
+
+    const flashcard = document.querySelector(".flashcard");
+    const questionEl = document.querySelector(".flashcard-question");
+    const answerEl = document.querySelector(".flashcard-answer");
+    const counterEl = document.getElementById("flashcardCounter");
+    const flashcardScoreEl = document.getElementById("flashcardScore");
+    const fcButtons = document.querySelectorAll(".fc-btn");
+
+    function updateFlashcardScore() {
+      const gotCount = flashcardStatus.filter(s => s === "got").length;
+      const reviewedCount = flashcardStatus.filter(s => s !== null).length;
+      flashcardScoreEl.textContent = `Got it: ${gotCount} / ${flashcards.length} (reviewed ${reviewedCount} / ${flashcards.length})`;
+    }
+
+    // Swaps in a freshly fetched flashcard set and resets progress/score state to match.
+    function loadFlashcards(items) {
+      flashcards = items;
+      flashcardStatus = new Array(flashcards.length).fill(null);
+      currentCard = 0;
+      displayCard(currentCard);
+      updateFlashcardScore();
+    }
+
+    function displayCard(index) {
+      showingAnswer = false;
+      questionEl.textContent = flashcards[index].question;
+      answerEl.textContent = "Click the card to reveal the answer.";
+      flashcard.classList.remove("show-answer");
+      counterEl.textContent = `${index + 1} / ${flashcards.length}`;
+
+      fcButtons.forEach(btn => {
+        btn.classList.remove("selected");
+        if (flashcardStatus[index] === btn.dataset.status) {
+          btn.classList.add("selected");
+        }
+      });
+    }
+
+    function showFlashcardsLoading() {
+      questionEl.textContent = "Generating flashcards...";
+      answerEl.textContent = "This can take a minute.";
+      flashcard.classList.remove("show-answer");
+      counterEl.textContent = "";
+      flashcardScoreEl.textContent = "";
+      fcButtons.forEach(b => b.disabled = true);
+    }
+
+    function showFlashcardsError(message) {
+      questionEl.textContent = "Couldn't load flashcards";
+      answerEl.textContent = message;
+      counterEl.textContent = "";
+      flashcardScoreEl.innerHTML = `<button class="check-btn" type="button" onclick="fetchFlashcardsData()">Try again</button>`;
+      fcButtons.forEach(b => b.disabled = true);
+    }
+
+    // Guards the flip/arrow handlers below so clicking the card before real
+    // data exists does nothing, instead of flipping through placeholder text.
+    let flashcardsReady = false;
+
+    function showFlashcardsGeneratePrompt() {
+      flashcardsReady = false;
+      questionEl.textContent = `Generate flashcards for ${documentName}`;
+      answerEl.innerHTML = `<button class="cta-btn" type="button" onclick="fetchFlashcardsData()">Generate Flashcards</button>`;
+      flashcard.classList.remove("show-answer");
+      counterEl.textContent = "";
+      flashcardScoreEl.textContent = "";
+      fcButtons.forEach(b => b.disabled = true);
+    }
+
+    async function fetchFlashcardsData() {
+      showFlashcardsLoading();
+      try {
+        const data = await postToBackend("/generate/flashcards", "flashcards");
+        const mapped = (data.flashcards || []).map(fc => ({ question: fc.front, answer: fc.back }));
+        if (mapped.length === 0) throw new Error("No flashcards were returned.");
+        fcButtons.forEach(b => b.disabled = false);
+        flashcardsReady = true;
+        loadFlashcards(mapped);
+      } catch (err) {
+        showFlashcardsError(err.message);
+      }
+    }
+
+    showFlashcardsGeneratePrompt();
+
+    flashcard.addEventListener("click", () => {
+      if (!flashcardsReady) return; // nothing to flip yet — the button inside answerEl handles generation
+      if (!showingAnswer) {
+        answerEl.textContent = flashcards[currentCard].answer;
+        flashcard.classList.add("show-answer");
+      } else {
+        answerEl.textContent = "Click the card to reveal the answer.";
+        flashcard.classList.remove("show-answer");
+      }
+      showingAnswer = !showingAnswer;
+    });
+
+    fcButtons.forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation(); // don't let this bubble up and re-flip the card
+        if (!flashcardsReady) return;
+        flashcardStatus[currentCard] = btn.dataset.status;
+        fcButtons.forEach(b => b.classList.remove("selected"));
+        btn.classList.add("selected");
+        updateFlashcardScore();
+
+        setTimeout(() => {
+          currentCard = (currentCard + 1) % flashcards.length;
+          displayCard(currentCard);
+        }, 350);
+      });
+    });
+
+    document.querySelector(".arrow.left").addEventListener("click", () => {
+      if (!flashcardsReady) return;
+      currentCard = (currentCard - 1 + flashcards.length) % flashcards.length;
+      displayCard(currentCard);
+    });
+
+    document.querySelector(".arrow.right").addEventListener("click", () => {
+      if (!flashcardsReady) return;
+      currentCard = (currentCard + 1) % flashcards.length;
+      displayCard(currentCard);
+    });
+
+    // ===================== Practice Questions (MCQ-only) =====================
+    let mcqQuestions = [
+      { question: "Which chamber of the heart pumps oxygen-rich blood to the rest of the body?", options: ["Right atrium", "Right ventricle", "Left atrium", "Left ventricle"], correct: 3 },
+      { question: "What receives oxygen-poor blood returning from the body?", options: ["Left ventricle", "Right atrium", "Left atrium", "Aorta"], correct: 1 },
+      { question: "What is the main role of the heart valves?", options: ["Produce heartbeats", "Prevent backward blood flow", "Filter oxygen", "Store blood"], correct: 1 },
+      { question: "Which structure separates the left and right sides of the heart?", options: ["Aorta", "Pulmonary vein", "Septum", "Atrium"], correct: 2 },
+      { question: "Which blood vessel carries oxygen-rich blood away from the heart?", options: ["Pulmonary artery", "Aorta", "Vena cava", "Pulmonary vein"], correct: 1 }
+    ];
+
+    // Tracks each question's outcome so score persists as you navigate back and forth.
+    // Each entry: { answered: bool, correct: bool|null, chosen: number|null }
+    let mcqState = mcqQuestions.map(() => ({ answered: false, correct: null, chosen: null }));
+
+    let currentPracticeIndex = 0;
+    let showingResults = false;
+
+    const questionCardHost = document.getElementById("questionCardHost");
+    const practiceProgress = document.getElementById("practiceProgress");
+    const practiceScoreDisplay = document.getElementById("practiceScoreDisplay");
+    const prevQuestionBtn = document.getElementById("prevQuestionBtn");
+    const nextQuestionBtn = document.getElementById("nextQuestionBtn");
+
+    // Swaps in a freshly fetched question set (used once /generate/questions is wired up)
+    // and resets progress/score/results state to match.
+    function loadMcqQuestions(questions) {
+      mcqQuestions = questions;
+      mcqState = mcqQuestions.map(() => ({ answered: false, correct: null, chosen: null }));
+      currentPracticeIndex = 0;
+      showingResults = false;
+      renderQuestion();
+    }
+
+    function updatePracticeScore() {
+      const correctCount = mcqState.filter(s => s.correct === true).length;
+      const answeredCount = mcqState.filter(s => s.answered).length;
+      practiceScoreDisplay.textContent = `Score: ${correctCount} / ${mcqQuestions.length} correct (${answeredCount} / ${mcqQuestions.length} answered)`;
+    }
+
+    function renderQuestion() {
+      const item = mcqQuestions[currentPracticeIndex];
+      const state = mcqState[currentPracticeIndex];
+
+      prevQuestionBtn.style.display = "";
+      nextQuestionBtn.style.display = "";
+      practiceProgress.textContent = `Question ${currentPracticeIndex + 1} of ${mcqQuestions.length}`;
+      prevQuestionBtn.disabled = currentPracticeIndex === 0;
+      nextQuestionBtn.disabled = false;
+      nextQuestionBtn.textContent = currentPracticeIndex === mcqQuestions.length - 1 ? "See Results" : "Next ›";
+      updatePracticeScore();
+
+      questionCardHost.innerHTML = `
+        <div class="question-card">
+          <p class="question-text">${item.question}</p>
+          <div class="options-list">
+            ${item.options.map((opt, i) => `<button class="option-btn" data-index="${i}">${opt}</button>`).join("")}
+          </div>
+        </div>
+      `;
+      const optionBtns = questionCardHost.querySelectorAll(".option-btn");
+
+      function lockMcq(chosen) {
+        optionBtns.forEach((b, i) => {
+          b.disabled = true;
+          if (i === item.correct) b.classList.add("correct");
+          else if (i === chosen) b.classList.add("incorrect");
+        });
+      }
+
+      if (state.answered) {
+        lockMcq(state.chosen);
+      }
+
+      optionBtns.forEach(btn => {
+        btn.addEventListener("click", () => {
+          const chosen = parseInt(btn.dataset.index, 10);
+          lockMcq(chosen);
+          state.answered = true;
+          state.chosen = chosen;
+          state.correct = chosen === item.correct;
+          updatePracticeScore();
+        });
+      });
+    }
+
+    function showResults() {
+      showingResults = true;
+      const correctCount = mcqState.filter(s => s.correct === true).length;
+      const pct = mcqQuestions.length ? Math.round((correctCount / mcqQuestions.length) * 100) : 0;
+
+      practiceProgress.textContent = "Results";
+      updatePracticeScore();
+      prevQuestionBtn.style.display = "none";
+      nextQuestionBtn.style.display = "none";
+
+      const rows = mcqQuestions.map((item, i) => {
+        const s = mcqState[i];
+        let icon = "—";
+        let statusClass = "unanswered";
+        if (s.answered) {
+          icon = s.correct ? "✓" : "✕";
+          statusClass = s.correct ? "correct" : "incorrect";
+        }
+        return `<li class="result-row ${statusClass}"><span class="result-icon">${icon}</span><span class="result-text">${item.question}</span></li>`;
+      }).join("");
+
+      questionCardHost.innerHTML = `
+        <div class="results-card">
+          <p class="results-score">${correctCount} / ${mcqQuestions.length}</p>
+          <p class="results-label">correct &middot; ${pct}%</p>
+          <ul class="results-list">${rows}</ul>
+          <div class="results-actions">
+            <button class="check-btn" id="retryBtn">Retry Quiz</button>
+            <button class="question-nav-btn" id="reviewBtn">Review Answers</button>
+          </div>
+        </div>
+      `;
+
+      document.getElementById("retryBtn").addEventListener("click", () => {
+        mcqState.forEach(s => {
+          s.answered = false;
+          s.correct = null;
+          s.chosen = null;
+        });
+        currentPracticeIndex = 0;
+        showingResults = false;
+        renderQuestion();
+      });
+
+      document.getElementById("reviewBtn").addEventListener("click", () => {
+        currentPracticeIndex = 0;
+        showingResults = false;
+        renderQuestion();
+      });
+    }
+
+    prevQuestionBtn.addEventListener("click", () => {
+      if (currentPracticeIndex > 0) {
+        currentPracticeIndex--;
+        renderQuestion();
+      }
+    });
+
+    nextQuestionBtn.addEventListener("click", () => {
+      if (currentPracticeIndex < mcqQuestions.length - 1) {
+        currentPracticeIndex++;
+        renderQuestion();
+      } else {
+        showResults();
+      }
+    });
+
+    function showQuestionsLoading() {
+      practiceProgress.textContent = "";
+      practiceScoreDisplay.textContent = "";
+      prevQuestionBtn.style.display = "none";
+      nextQuestionBtn.style.display = "none";
+      questionCardHost.innerHTML = `<div class="loading"><div class="spinner"></div><p>Generating practice questions...</p></div>`;
+    }
+
+    function showQuestionsError(message) {
+      practiceProgress.textContent = "";
+      practiceScoreDisplay.textContent = "";
+      prevQuestionBtn.style.display = "none";
+      nextQuestionBtn.style.display = "none";
+      questionCardHost.innerHTML = `
+        <div class="loading">
+          <p>⚠️ ${message}</p>
+          <button class="check-btn" type="button" onclick="fetchQuestionsData()">Try again</button>
+        </div>
+      `;
+    }
+
+    async function fetchQuestionsData() {
+      showQuestionsLoading();
+      try {
+        const data = await postToBackend("/generate/questions", "questions");
+        if (!data.mcq || data.mcq.length === 0) throw new Error("No questions were returned.");
+        loadMcqQuestions(data.mcq);
+      } catch (err) {
+        showQuestionsError(err.message);
+      }
+    }
+
+    function showQuestionsGeneratePrompt() {
+      practiceProgress.textContent = "";
+      practiceScoreDisplay.textContent = "";
+      prevQuestionBtn.style.display = "none";
+      nextQuestionBtn.style.display = "none";
+      questionCardHost.innerHTML = `
+        <div class="generate-prompt">
+          <p>Ready to generate practice questions for <strong>${documentName}</strong>.</p>
+          <button class="cta-btn" type="button" onclick="fetchQuestionsData()">Generate Questions</button>
+        </div>
+      `;
+    }
+
+    showQuestionsGeneratePrompt();
+
+    // ===================== Chat / Q&A =====================
+    // ===================== Chat / Q&A =====================
+    const chatMessages = document.getElementById("chatMessages");
+    const chatInput = document.getElementById("chatInput");
+    const chatSendBtn = document.getElementById("chatSendBtn");
+    const chatSuggestions = document.getElementById("chatSuggestions");
+
+    function addBubble(text, sender) {
+      const bubble = document.createElement("div");
+      bubble.className = `chat-bubble ${sender}`;
+      bubble.textContent = text;
+      chatMessages.appendChild(bubble);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+      return bubble;
+    }
+
+    async function sendMessage(text) {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+
+      addBubble(trimmed, "user");
+      chatInput.value = "";
+
+      // Display animated typing indicator
+      const typingBubble = document.createElement("div");
+      typingBubble.className = "chat-bubble bot";
+      typingBubble.innerHTML = `<span class="typing-dots"><span></span><span></span><span></span></span>`;
+      chatMessages.appendChild(typingBubble);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+
+      try {
+        const response = await fetch(`${API_URL}/chat`, {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({
+            document_id: documentId,
+            question: trimmed
+          })
+        });
+
+        const data = await response.json();
+        typingBubble.remove();
+
+        if (!response.ok) {
+          addBubble(messageForStatus(response.status, data?.detail), "bot");
+        } else {
+          // Adjust 'data.answer' or 'data.response' depending on your backend JSON output
+          addBubble(data.answer || data.response || "No response received.", "bot");
+        }
+      } catch (err) {
+        typingBubble.remove();
+        addBubble("Couldn't reach the server. Is the backend running?", "bot");
+      }
+    }
+
+    chatSendBtn.addEventListener("click", () => sendMessage(chatInput.value));
+    chatInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") sendMessage(chatInput.value);
+    });
+    chatSuggestions.querySelectorAll(".chip").forEach(chip => {
+      chip.addEventListener("click", () => sendMessage(chip.textContent));
+    });
+
+
+    // const chatMessages = document.getElementById("chatMessages");
+    // const chatInput = document.getElementById("chatInput");
+    // const chatSendBtn = document.getElementById("chatSendBtn");
+    // const chatSuggestions = document.getElementById("chatSuggestions");
+
+    // if (hasDocument) {
+    //   const chatDocLabel = document.getElementById("chatDocLabel");
+    //   if (chatDocLabel) chatDocLabel.textContent = `"${documentName}"`;
+    // }
+
+    // // /chat has a different request shape than /generate/* (question, not
+    // // material_type), so it gets its own small POST helper rather than
+    // // reusing postToBackend as-is.
+    // async function askChatBackend(question) {
+    //   let response;
+    //   try {
+    //     response = await fetch(`${API_URL}/chat`, {
+    //       method: "POST",
+    //       headers: authHeaders(),
+    //       body: JSON.stringify({ document_id: documentId, question })
+    //     });
+    //   } catch (networkError) {
+    //     throw new Error("Couldn't reach the server. Is the backend running?");
+    //   }
+
+    //   let data = null;
+    //   try {
+    //     data = await response.json();
+    //   } catch {
+    //     // not JSON — fall through to status-based message below
+    //   }
+
+    //   if (!response.ok) {
+    //     if (response.status === 422) {
+    //       throw new Error("Try asking a slightly longer question.");
+    //     }
+    //     throw new Error(messageForStatus(response.status, data?.detail));
+    //   }
+    //   return data;
+    // }
+
+    // function addBubble(text, sender) {
+    //   const bubble = document.createElement("div");
+    //   bubble.className = `chat-bubble ${sender}`;
+    //   bubble.textContent = text;
+    //   chatMessages.appendChild(bubble);
+    //   chatMessages.scrollTop = chatMessages.scrollHeight;
+    //   return bubble;
+    // }
+
+    // async function sendMessage(text) {
+    //   const trimmed = text.trim();
+    //   if (!trimmed) return;
+    //   addBubble(trimmed, "user");
+    //   chatInput.value = "";
+    //   chatSendBtn.disabled = true;
+
+    //   const typingBubble = document.createElement("div");
+    //   typingBubble.className = "chat-bubble bot";
+    //   typingBubble.innerHTML = `<span class="typing-dots"><span></span><span></span><span></span></span>`;
+    //   chatMessages.appendChild(typingBubble);
+    //   chatMessages.scrollTop = chatMessages.scrollHeight;
+
+    //   try {
+    //     const data = await askChatBackend(trimmed);
+    //     typingBubble.remove();
+    //     addBubble(data.answer || "The server didn't return an answer.", "bot");
+    //   } catch (err) {
+    //     typingBubble.remove();
+    //     addBubble(`⚠️ ${err.message}`, "bot");
+    //   } finally {
+    //     chatSendBtn.disabled = false;
+    //   }
+    // }
+
+    // chatSendBtn.addEventListener("click", () => sendMessage(chatInput.value));
+    // chatInput.addEventListener("keydown", (e) => {
+    //   if (e.key === "Enter") sendMessage(chatInput.value);
+    // });
+    // chatSuggestions.querySelectorAll(".chip").forEach(chip => {
+    //   chip.addEventListener("click", () => sendMessage(chip.textContent));
+    // });
+
+    // ===================== Kick off real data fetches =====================
+    // Only runs when a document actually exists — the empty-state guard at
+    // the top of this script already hides the whole studyContainer (and
+    // returns early conceptually) when there's no documentId, so reaching
+    // this point means it's safe to fetch.
+    // ===================== Populate document name label =====================
+    // Generation is now on-demand per tab (Generate Summary / Generate
+    // Flashcards / Generate Questions buttons) instead of firing all three
+    // fetches automatically — avoids stacking up against the backend's
+    // per-minute rate limits just from loading the page.
+    if (hasDocument) {
+      const summaryDocLabel = document.getElementById("summaryDocLabel");
+      if (summaryDocLabel) summaryDocLabel.textContent = documentName;
+    }
+  </script>
+</body>
+</html>

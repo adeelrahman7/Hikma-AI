@@ -5,6 +5,8 @@ __pycache__/
 .Python
 venv/
 env/
+.venv/
+archive/
 
 # Model files (too large for git)
 embeddings.npy
