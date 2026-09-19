@@ -1,322 +1,103 @@
-# 📚 AI Study Helper
+# Hikma AI
 
-> ⚠️ **Work in Progress** - This project is under active development and may contain bugs.
+An AI-powered study companion. Upload a document (PDF, PowerPoint, or Word) and get an AI-generated summary, flashcards, multiple-choice practice questions, and a chat interface — all grounded in that specific document, not general knowledge.
 
-An intelligent document-based study assistant that transforms your notes, slides, and textbooks into interactive study materials using AI.
+## Features
 
-[![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/downloads/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green.svg)](https://fastapi.tiangolo.com/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+- **Document upload** — PDF, PPTX, and DOCX support, with text extraction and Unicode normalization
+- **AI Summary** — a concise, bullet-point overview of the uploaded material
+- **Flashcards** — auto-generated question/answer pairs with a flip-card UI and "Got it" / "Still learning" self-tracking
+- **Practice Questions** — multiple-choice questions generated with a validated JSON schema (via Ollama's structured outputs) so every question has real, grounded answer choices — not placeholder text. Includes scoring, a results screen, and retry/review
+- **Chat Q&A** — ask free-form questions about your document; answers are retrieved from the specific parts of the document most relevant to your question (RAG via FAISS), not the model's general training knowledge
+- **Sidebar navigation** — shared across all pages from a single partial, no duplicated markup
 
----
+## Tech Stack
 
-## 🎯 What It Does
+**Backend:** FastAPI, Ollama (local LLM inference, `llama3.2`), FAISS (vector search), `sentence-transformers` (embeddings), PyPDF2 / `python-pptx` / `python-docx` (text extraction), Pydantic (structured output schemas), `slowapi` (rate limiting)
 
-Upload any study document (PDF, PowerPoint, Word) and the AI automatically generates:
-- ✅ **Summaries** - Concise overviews of key concepts
-- ✅ **Flashcards** - Question/answer pairs for memorization
-- ✅ **Practice Questions** - Multiple choice and short answer questions
-- ✅ **Interactive Chat** - Ask questions about your uploaded materials
+**Frontend:** Plain HTML/CSS/JS — no framework. Served directly by FastAPI as static files.
 
----
-
-## 🚀 Features
-
-### Core Functionality
-- **📄 Multi-Format Support** - PDF, PPTX, DOCX files
-- **🤖 AI-Powered Generation** - Uses Ollama (Llama 3.2) for intelligent content creation
-- **💬 RAG Chat System** - Ask questions and get answers from your documents
-- **🔍 Semantic Search** - FAISS vector database for fast, accurate retrieval
-- **📊 Topic Extraction** - Automatically identifies main subjects in your materials
-
-### Security & Performance
-- **🔒 Rate Limiting** - Protection against abuse (5 uploads/min, 10 generations/min, 20 chats/min)
-- **✅ Input Validation** - Strict Pydantic models with sanitization
-- **🛡️ Prompt Injection Protection** - Sanitizes all LLM inputs
-- **📝 Comprehensive Logging** - Track all API activity
-- **🔑 API Key Ready** - Optional authentication infrastructure
-- **⚡ Optimized Performance** - Efficient chunking and embedding strategies
-- 
----
-
-## 📦 Tech Stack
-
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| **Backend** | FastAPI | REST API server |
-| **LLM** | Ollama (Llama 3.2) | AI text generation |
-| **Embeddings** | SentenceTransformers | Text vectorization |
-| **Vector DB** | FAISS | Semantic similarity search |
-| **Document Parsing** | PyPDF2, python-pptx, python-docx | Extract text from files |
-| **Security** | slowapi, Pydantic | Rate limiting & validation |
-| **Logging** | Python logging | Activity tracking |
-
----
-
-## 🛠️ Installation
+## Getting Started
 
 ### Prerequisites
-- Python 3.14+
-- Ollama (for AI generation)
+- **Python 3.11** specifically — some pinned dependencies below (`sentence-transformers`, `faiss-cpu`) are old enough that they don't have compatible wheels for newer Python versions
+- [Ollama](https://ollama.com) installed locally, with the `llama3.2` model pulled:
+  ```
+  ollama pull llama3.2
+  ```
 
-### Step 1: Clone Repository
-```bash
-git clone https://github.com/yourusername/ai-study-helper.git
-cd ai-study-helper
-```
+### Setup
 
-### Step 2: Install Python Dependencies
-```bash
+```powershell
+# Clone the repo
+git clone https://github.com/adeelrahman7/Hikma-AI.git
+cd "Hikma AI"
+
+# Create and activate a virtual environment (Python 3.11)
+py -3.11 -m venv .venv
+.venv\Scripts\Activate.ps1
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-**requirements.txt:**
-```txt
-fastapi==0.104.1
-uvicorn==0.24.0
-pydantic==2.5.0
-sentence-transformers==2.2.2
-faiss-cpu==1.7.4
-numpy==1.26.2
-requests==2.31.0
-PyPDF2==3.0.1
-python-pptx==0.6.23
-python-docx==1.1.0
-python-multipart==0.0.6
-slowapi==0.1.9
-python-dotenv==1.0.0
-```
+> **Note on dependency versions:** `sentence-transformers==2.2.2` predates the current `huggingface_hub`/`transformers` releases and will fail to import against them. If you hit an `ImportError` involving `huggingface_hub` after installing, this project pins compatible versions in `requirements.txt` (`huggingface_hub==0.16.4`, `transformers==4.30.2`) specifically to avoid this — make sure `pip install` actually picked those up rather than a newer version pulled in transitively.
 
-### Step 3: Install Ollama
-1. Download from [https://ollama.ai](https://ollama.ai)
-2. Install the application
-3. Download the AI model:
-```bash
-ollama pull llama3.2
-```
+### Environment variables
 
-### Step 4: Setup Environment (Optional)
-Create a `.env` file for API key protection:
-```bash
+Create a `.env` file in the project root:
+```
 API_KEY_ENABLED=false
-API_KEY=your-secret-key-here
+API_KEY=your-key-here
+OLLAMA_MODEL=llama3.2
+```
+Leave `API_KEY_ENABLED=false` for local development — no key is required in that case.
+
+### Running it
+
+Start Ollama (if it isn't already running as a background service):
+```
+ollama serve
 ```
 
----
-
-## 🚀 Quick Start
-
-### Start the Backend Server
-```bash
+Start the backend:
+```powershell
 uvicorn main:app --reload
 ```
 
-Server runs at: **http://localhost:8000**
+Visit **http://localhost:8000** — the app is served directly from the backend, no separate frontend server needed.
 
-### Access the API Documentation
-Open your browser: **http://localhost:8000/docs**
+## Project Structure
 
-You'll see interactive Swagger UI with all endpoints!
-
----
-
-## 📖 API Usage Examples
-
-### 1. Upload a Document
-```bash
-curl -X POST "http://localhost:8000/upload" \
-  -H "Content-Type: multipart/form-data" \
-  -F "file=@lecture_notes.pdf"
+```
+Hikma AI/
+├── main.py                  # FastAPI app: upload, generation endpoints, chat, RAG
+├── requirements.txt
+├── .env                     # not committed — see Setup above
+├── static/
+│   ├── landingpage.html
+│   ├── upload.html
+│   ├── study.html           # summary / flashcards / questions / chat tabs
+│   ├── favicon.svg
+│   ├── css/
+│   │   └── styles.css
+│   ├── js/
+│   │   └── nav.js           # shared sidebar/nav logic
+│   └── partials/
+│       └── sidebar.html     # shared sidebar markup, injected into every page
 ```
 
-**Response:**
-```json
-{
-  "document_id": "abc123def456...",
-  "filename": "lecture_notes.pdf",
-  "pages_processed": 15,
-  "topics_found": ["Cell Biology", "Mitosis", "DNA Replication"],
-  "message": "Document uploaded and processed successfully."
-}
-```
+## How grounding works
 
-### 2. Generate Summary
-```bash
-curl -X POST "http://localhost:8000/generate/summary" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "document_id": "abc123def456...",
-    "material_type": "summary"
-  }'
-```
+Summary, flashcards, and questions are generated by giving the model the document's extracted text directly. Chat instead uses retrieval: the question is embedded and compared against the document's chunk embeddings in FAISS, and only the most relevant chunks are included in the prompt. In both cases, the model isn't technically prevented from using outside knowledge — it's constrained by what context it's given and instructed to stick to it, which is the standard approach for this kind of grounding.
 
-**Response:**
-```json
-{
-  "document_id": "abc123def456...",
-  "material_type": "summary",
-  "content": "Main topics:\n• Cell division processes\n• DNA replication mechanisms\n...",
-  "created_at": "2026-01-24T10:30:00"
-}
-```
+## Known limitations
 
-### 3. Generate Flashcards
-```bash
-curl -X POST "http://localhost:8000/generate/flashcards" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "document_id": "abc123def456...",
-    "material_type": "flashcards"
-  }'
-```
+- Practice questions are multiple-choice only (True/False and Short Answer were tried and descoped — see project history for why)
+- Documents are stored in memory (`documents_db`) — restarting the server clears all uploaded documents
+- Rate limits on the `/generate/*` endpoints are tuned loosely for local single-user development, not production traffic
+- No real authentication yet — the sidebar's login/logout is a visual placeholder
 
-**Response:**
-```json
-{
-  "document_id": "abc123def456...",
-  "material_type": "flashcards",
-  "flashcards": [
-    {
-      "front": "What is mitosis?",
-      "back": "Cell division producing two identical daughter cells",
-      "topic": "Cell Biology"
-    }
-  ],
-  "count": 10,
-  "created_at": "2026-01-24T10:31:00"
-}
-```
+## License
 
-### 4. Chat with Your Document
-```bash
-curl -X POST "http://localhost:8000/chat" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "document_id": "abc123def456...",
-    "question": "What happens during prophase?"
-  }'
-```
-
-**Response:**
-```json
-{
-  "document_id": "abc123def456...",
-  "question": "What happens during prophase?",
-  "answer": "During prophase, chromatin condenses into chromosomes...",
-  "confidence_score": 0.87,
-  "sources_used": 3
-}
-```
-
-### 5. List All Documents
-```bash
-curl -X GET "http://localhost:8000/documents"
-```
-
-### 6. Delete a Document
-```bash
-curl -X DELETE "http://localhost:8000/documents/abc123def456..."
-```
-
----
-
-## 🔐 Security Features
-
-### Rate Limiting
-Prevents API abuse with tiered limits:
-- **Uploads:** 5 per minute
-- **Generations:** 10 per minute (summaries, flashcards, questions)
-- **Chat:** 20 per minute
-- **Document List:** 30 per minute
-
-### Input Validation
-- ✅ File size limit: 10MB
-- ✅ Allowed formats: PDF, PPTX, DOCX only
-- ✅ MIME type validation
-- ✅ Question length: 3-500 characters
-- ✅ Document ID format: exactly 32 characters (MD5 hash)
-
-### Prompt Injection Protection
-All text sent to LLM is sanitized:
-- Removes code blocks (```)
-- Strips HTML/XML tags
-- Blocks injection attempts
-- Limits context length
-
----
-
-## 📊 API Endpoints Reference
-
-| Method | Endpoint | Description | Rate Limit |
-|--------|----------|-------------|------------|
-| `GET` | `/` | Frontend interface | - |
-| `GET` | `/health` | API health check | - |
-| `POST` | `/upload` | Upload document | 5/min |
-| `GET` | `/documents` | List all documents | 30/min |
-| `POST` | `/generate/summary` | Generate summary | 10/min |
-| `POST` | `/generate/flashcards` | Generate flashcards | 10/min |
-| `POST` | `/generate/questions` | Generate questions | 10/min |
-| `POST` | `/chat` | Chat with document | 20/min |
-| `DELETE` | `/documents/{id}` | Delete document | 10/min |
-
-
----
-
-## 🔄 Evolution History
-
-### Version 1.0 - Intent-Based Chatbot
-- Basic pattern matching for greetings/farewells
-- ~20 hardcoded intents
-- Simple response selection
-
-### Version 2.0 - MCAT Semantic Search
-- FAISS vector database
-- 40+ MCAT physics concepts
-- Semantic similarity matching
-- User feedback learning system
-
-### Version 3.0 - AI Study Helper (Current)
-- **Complete pivot** from Q&A to document processing
-- Multi-format document upload (PDF/PPTX/DOCX)
-- RAG-powered generation system
-- AI-generated study materials
-- Production-ready security
-- Web interface
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
----
-
-## 📝 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## 👨‍💻 Author
-
-**Adeel**
-- GitHub: [@adeelrahman7](https://github.com/adeelrahman7)
-- Project Link: [https://github.com/adeelrahman7/ai-study-helper](https://github.com/adeelrahman7/AI-Study-Helper.git)
-
----
-
-## 🙏 Acknowledgments
-
-- [Ollama](https://ollama.ai) for local LLM infrastructure
-- [FAISS](https://github.com/facebookresearch/faiss) for vector search
-- [FastAPI](https://fastapi.tiangolo.com/) for the amazing framework
-- [Sentence Transformers](https://www.sbert.net/) for embeddings
-
-
-**⭐ If this helped you study better, give it a star!**
+See [LICENSE](./LICENSE).
