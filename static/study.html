@@ -199,26 +199,19 @@
     // ===================== Summary =====================
     const summaryBody = document.getElementById("summaryBody");
 
-    // The backend returns summary content as plain text (often with "-" or
-    // "*" bullet lines from the LLM's own formatting), not HTML — this does
-    // a light conversion so bullet-style lines render as an actual <ul>.
-    function formatSummaryContent(text) {
-      const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 0);
-      let html = "";
-      let inList = false;
-
-      for (const line of lines) {
-        const isBullet = /^[-*•]\s+/.test(line);
-        if (isBullet) {
-          if (!inList) { html += "<ul>"; inList = true; }
-          html += `<li>${line.replace(/^[-*•]\s+/, "")}</li>`;
-        } else {
-          if (inList) { html += "</ul>"; inList = false; }
-          html += `<p>${line}</p>`;
-        }
-      }
-      if (inList) html += "</ul>";
-      return html;
+    // Backend now returns distinct fields (overview, key_concepts,
+    // important_facts) instead of one free-text blob, so this renders real
+    // headed sections instead of guessing at bullet formatting.
+    function renderSummary(data) {
+      const conceptsHtml = (data.key_concepts || []).map(c => `<li>${c}</li>`).join("");
+      const factsHtml = (data.important_facts || []).map(f => `<li>${f}</li>`).join("");
+      summaryBody.innerHTML = `
+        <p>${data.overview || ""}</p>
+        <h3>Key Concepts</h3>
+        <ul>${conceptsHtml}</ul>
+        <h3>Important Facts</h3>
+        <ul>${factsHtml}</ul>
+      `;
     }
 
     function showSummaryError(message) {
@@ -234,7 +227,7 @@
       summaryBody.innerHTML = `<div class="loading"><div class="spinner"></div><p>Generating summary...</p></div>`;
       try {
         const data = await postToBackend("/generate/summary", "summary");
-        summaryBody.innerHTML = formatSummaryContent(data.content || "No summary content was returned.");
+        renderSummary(data);
       } catch (err) {
         showSummaryError(err.message);
       }
@@ -359,6 +352,58 @@
       showingAnswer = !showingAnswer;
     });
 
+    // Shown once every card in the set has been marked, instead of silently
+    // wrapping back around to card 1 forever (the bug: the old handler below
+    // only ever did `currentCard = (currentCard + 1) % flashcards.length`,
+    // which has no end condition at all).
+    const flashcardActionsEl = document.querySelector(".flashcard-actions");
+
+    function showFlashcardResults() {
+      flashcardsReady = false; // block flipping/marking while on the results screen
+      const gotCount = flashcardStatus.filter(s => s === "got").length;
+      const total = flashcards.length;
+      const learningCount = total - gotCount;
+      const pct = total ? Math.round((gotCount / total) * 100) : 0;
+
+      // (questionEl itself is hidden while .show-answer is set — see the
+      // .flashcard.show-answer .flashcard-question CSS rule — so the "Review
+      // complete!" heading lives inside the answer markup below instead.)
+      // Donut chart: the "got it" wedge is filled with the same gradient as
+      // the Arabic hero title, sized to the actual percentage via the --pct
+      // custom property; the rest of the ring is a flat neutral color.
+      answerEl.innerHTML = `
+        <div class="fc-results">
+          <h3 class="fc-results-title">Review complete!</h3>
+          <div class="fc-ring-wrap">
+            <div class="fc-ring" style="--pct:${pct}"></div>
+            <div class="fc-ring-hole">
+              <span class="fc-ring-pct">${pct}%</span>
+              <span class="fc-ring-label">Got it</span>
+            </div>
+          </div>
+          <div class="fc-legend">
+            <span class="fc-legend-item"><span class="fc-dot got"></span>Got it: ${gotCount}</span>
+            <span class="fc-legend-item"><span class="fc-dot learning"></span>Still learning: ${learningCount}</span>
+          </div>
+          <button class="check-btn fc-retry-btn" type="button" id="flashcardRetryBtn">Review Again</button>
+        </div>
+      `;
+      flashcard.classList.add("show-answer");
+      counterEl.textContent = `${total} / ${total}`;
+      // Hide the mark buttons outright — disabling them left them visible
+      // but greyed-out underneath the results message, which looked broken.
+      flashcardActionsEl.style.display = "none";
+
+      document.getElementById("flashcardRetryBtn").addEventListener("click", () => {
+        flashcardStatus = new Array(flashcards.length).fill(null);
+        currentCard = 0;
+        flashcardsReady = true;
+        flashcardActionsEl.style.display = ""; // let the .show-answer CSS rule control it again
+        displayCard(currentCard);
+        updateFlashcardScore();
+      });
+    }
+
     fcButtons.forEach(btn => {
       btn.addEventListener("click", (e) => {
         e.stopPropagation(); // don't let this bubble up and re-flip the card
@@ -368,7 +413,13 @@
         btn.classList.add("selected");
         updateFlashcardScore();
 
+        const allReviewed = flashcardStatus.every(s => s !== null);
+
         setTimeout(() => {
+          if (allReviewed) {
+            showFlashcardResults();
+            return;
+          }
           currentCard = (currentCard + 1) % flashcards.length;
           displayCard(currentCard);
         }, 350);
@@ -443,9 +494,11 @@
           <div class="options-list">
             ${item.options.map((opt, i) => `<button class="option-btn" data-index="${i}">${opt}</button>`).join("")}
           </div>
+          ${item.source_snippet ? `<div class="source-snippet" id="sourceSnippet"><strong>From your document:</strong> ${item.source_snippet}</div>` : ""}
         </div>
       `;
       const optionBtns = questionCardHost.querySelectorAll(".option-btn");
+      const sourceSnippetEl = document.getElementById("sourceSnippet");
 
       function lockMcq(chosen) {
         optionBtns.forEach((b, i) => {
@@ -453,6 +506,7 @@
           if (i === item.correct) b.classList.add("correct");
           else if (i === chosen) b.classList.add("incorrect");
         });
+        if (sourceSnippetEl) sourceSnippetEl.classList.add("show");
       }
 
       if (state.answered) {
@@ -467,6 +521,16 @@
           state.chosen = chosen;
           state.correct = chosen === item.correct;
           updatePracticeScore();
+
+          // Answering the LAST question used to leave you sitting on it —
+          // you had to notice the button now said "See Results" and click
+          // it separately. Auto-advance instead, with a short pause so the
+          // correct/incorrect highlight is still visible for a moment first.
+          if (currentPracticeIndex === mcqQuestions.length - 1) {
+            setTimeout(() => {
+              if (!showingResults) showResults();
+            }, 700);
+          }
         });
       });
     }
@@ -492,10 +556,23 @@
         return `<li class="result-row ${statusClass}"><span class="result-icon">${icon}</span><span class="result-text">${item.question}</span></li>`;
       }).join("");
 
+      const incorrectCount = mcqQuestions.length - correctCount;
+
       questionCardHost.innerHTML = `
         <div class="results-card">
-          <p class="results-score">${correctCount} / ${mcqQuestions.length}</p>
-          <p class="results-label">correct &middot; ${pct}%</p>
+          <div class="fc-results" style="margin-bottom: 26px;">
+            <div class="fc-ring-wrap">
+              <div class="fc-ring" style="--pct:${pct}"></div>
+              <div class="fc-ring-hole">
+                <span class="fc-ring-pct">${pct}%</span>
+                <span class="fc-ring-label">Correct</span>
+              </div>
+            </div>
+            <div class="fc-legend">
+              <span class="fc-legend-item"><span class="fc-dot got"></span>Correct: ${correctCount}</span>
+              <span class="fc-legend-item"><span class="fc-dot learning"></span>Incorrect: ${incorrectCount}</span>
+            </div>
+          </div>
           <ul class="results-list">${rows}</ul>
           <div class="results-actions">
             <button class="check-btn" id="retryBtn">Retry Quiz</button>
