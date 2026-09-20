@@ -21,6 +21,7 @@ from pptx import Presentation
 import docx
 from io import BytesIO
 import hashlib
+import random
 from datetime import datetime
 
 # adding limits to request size (to prevent overloads)
@@ -189,10 +190,33 @@ class Question(BaseModel):
 # --- Structured schema for /generate/questions (Day 2 rewrite, MCQ-only) ---
 # Mirrors study.html's practiceData.mcq shape exactly, so the frontend can
 # consume the response with zero field-name translation.
+# --- Structured schema for /generate/questions ---
+# EXTRACTION comes first: the model's only job is pulling term/definition
+# pairs out of the source text (an easy task for a small local model). The
+# actual MCQ construction happens in plain Python (see build_mcq_from_facts),
+# with zero LLM judgment involved in deciding what's "correct" — this is what
+# prevents the model from mixing up related concepts (e.g. git add vs commit)
+# and mislabeling the answer key.
+class ExtractedFact(BaseModel):
+    term: str
+    definition: str
+
+    @field_validator("term", "definition")
+    @classmethod
+    def must_be_real_content(cls, value: str) -> str:
+        cleaned = value.strip()
+        if len(cleaned) < 3:
+            raise ValueError(f"Field '{value}' is too short to be real content")
+        return value
+
+class ExtractedFacts(BaseModel):
+    facts: List[ExtractedFact] = Field(..., min_length=4)  # need at least 4 to build one MCQ
+
 class MCQItem(BaseModel):
     question: str
     options: List[str] = Field(..., min_length=4, max_length=4)
     correct: int = Field(..., ge=0, le=3)  # 0-based index into options
+    source_snippet: str = ""  # the exact extracted text the correct answer came from
 
     @field_validator("options")
     @classmethod
@@ -207,8 +231,44 @@ class MCQItem(BaseModel):
             raise ValueError("Duplicate options found in the same question")
         return options
 
-class MCQSet(BaseModel):
-    mcq: List[MCQItem]
+# --- Structured schema for /generate/flashcards ---
+# Replaces the old FRONT:/BACK:/--- text parsing (parse_flashcards_by_separator
+# etc.) with a validated schema, same reasoning as the MCQ rewrite: guarantees
+# well-formed cards instead of hoping the model's formatting holds up.
+class FlashcardItem(BaseModel):
+    front: str
+    back: str
+
+    @field_validator("front", "back")
+    @classmethod
+    def must_be_real_content(cls, value: str) -> str:
+        cleaned = value.strip()
+        if len(cleaned) < 3:
+            raise ValueError(f"Flashcard field '{value}' is too short to be real content")
+        if cleaned.isdigit():
+            raise ValueError(f"Flashcard field '{value}' is just a number, not real content")
+        return value
+
+class FlashcardSet(BaseModel):
+    flashcards: List[FlashcardItem]
+
+# --- Structured schema for /generate/summary ---
+# Splits the summary into distinct sections instead of one free-text blob,
+# so the frontend can render real headings/lists instead of guessing at
+# bullet-point formatting from raw text.
+class SummaryContent(BaseModel):
+    overview: str
+    key_concepts: List[str] = Field(..., min_length=1)
+    important_facts: List[str] = Field(..., min_length=1)
+
+# --- Structured schema for the summary's "map" step ---
+# Long documents are summarized in two passes (map-reduce): first each chunk
+# of the document is condensed into a handful of key points (this schema),
+# then all the chunks' key points together are condensed into the final
+# SummaryContent above. This lets the whole document be covered, not just
+# whatever fits in the first few thousand characters.
+class ChunkKeyPoints(BaseModel):
+    key_points: List[str] = Field(..., min_length=1, max_length=6)
 
 class StudyMaterial(BaseModel):
     document_id: str
@@ -260,99 +320,6 @@ def extract_text_from_docx(file_bytes: bytes) -> str:
         text += para.text + "\n"
     return text
 
-# Method 1: 
-def parse_flashcards_by_separator(raw_cards, doc):
-    """Parse flashcards when separated by '---' """
-    cards = []
-    
-    for card_block in raw_cards:
-        card_block =  card_block.strip()
-        
-        if not card_block or "FRONT:" not in card_block or "BACK:" not in card_block:
-            continue
-        
-        front_pos = card_block.find("FRONT:")
-        back_pos = card_block.find("BACK:")
-        
-        if front_pos == -1 or back_pos == -1:
-            continue
-        
-        front = card_block[front_pos + 6:back_pos].strip()
-        back = card_block[back_pos + 5:].strip()
-        
-        if "FRONT:" in back:
-            back = back[:back.find("FRONT:")].strip()
-        
-        if front and back and len(front) > 0 and len(back) > 0:
-            cards.append({
-                "front": front,
-                "back": back,
-                "topic": doc["topics"][0] if doc["topics"] else "General"
-            })
-    return cards[:10]
-
-# Method 2:
-def parse_flashcards_by_lines(response, doc):
-    cards = []
-    lines = response.split('\n')
-
-    current_front = None
-    current_back = None
-    
-    for line in lines:
-        line = line.strip()
-        
-        if line.startswith("FRONT:"):
-            if current_front and current_back:
-                cards.append({  
-                    "front": current_front,
-                    "back": current_back,
-                    "topic": doc["topics"][0] if doc["topics"] else "General"
-                })
-            
-            current_front = line.replace("FRONT:", "").strip()
-            current_back = None
-            
-        elif line.startswith("BACK:"):
-            current_back = line.replace("BACK:", "").strip()
-        
-        elif current_back is not None and not line.startswith(("FRONT:", "BACK:", "---")):
-            current_back += " " + line
-            
-    if current_front and current_back:
-        cards.append({
-            "front": current_front,
-            "back": current_back,
-            "topic": doc["topics"][0] if doc["topics"] else "General"
-        })
-    
-    return cards[:10]
-
-# Method 3: 
-def parse_flashcards_aggressive(response, doc):
-    """Aggressive parsing - search for all FRONT: and BACK: occurrences"""
-    cards = []
-    
-    # Find all positions of FRONT: and BACK:
-    import re
-    
-    # Use regex to find all flashcard patterns
-    pattern = r'FRONT:\s*([^\n]+(?:\n(?!BACK:)[^\n]*)*)\s*BACK:\s*([^\n]+(?:\n(?!FRONT:)[^\n]*)*)'
-    matches = re.finditer(pattern, response, re.MULTILINE)
-    
-    for match in matches:
-        front = match.group(1).strip()
-        back = match.group(2).strip()
-        
-        if front and back and len(front) > 0 and len(back) > 0:
-            cards.append({
-                "front": front,
-                "back": back,
-                "topic": doc["topics"][0] if doc["topics"] else "General"
-            })
-    
-    return cards[:10]
-
 # Function to chunk text into smaller pieces
 # LLMs and embedding models have token limits, so we need to split large texts
 
@@ -372,7 +339,26 @@ def chunk_text(text: str, chunk_size: int = 500) -> List[str]:
             current_length = 0
     if current_chunk:
         chunks.append(" ".join(current_chunk))
-        
+
+    return chunks
+
+# Chunking sized for whole-document LLM processing — NOT the same as
+# chunk_text() above, which makes small chunks for embedding search.
+# This makes bigger pieces (roughly one "section"/"topic" worth of text)
+# so a long document can be walked section-by-section instead of being
+# truncated to the first few thousand characters. Each chunk still comfortably
+# fits inside the num_ctx window we pass to Ollama for these calls.
+def chunk_text_for_llm(text: str, chunk_size_words: int = 700) -> List[str]:
+    words = text.split()
+    chunks = []
+    current = []
+    for word in words:
+        current.append(word)
+        if len(current) >= chunk_size_words:
+            chunks.append(" ".join(current))
+            current = []
+    if current:
+        chunks.append(" ".join(current))
     return chunks
 
 # Function to create a FAISS index from text chunks
@@ -410,7 +396,10 @@ async def generate_with_ollama(prompt: str, model: str = "llama3.2", format_sche
         payload['format'] = format_schema
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        # Raised from 120s: with full-document chunking, larger num_ctx values,
+        # and a "take its time" preference for quality over speed, individual
+        # calls on slower CPUs can legitimately take longer than 2 minutes.
+        async with httpx.AsyncClient(timeout=300) as client:
             response = await client.post(
                 'http://localhost:11434/api/generate',
                 json=payload
@@ -469,6 +458,61 @@ def sanitize_for_llm(text:str, max_length:int=3000) -> str:
     text = re.sub(r"[<>]", "", text)
     text = re.sub(r"Ignore previous instructions.", "", text)
     return text[:max_length].strip()
+
+# --- Deduplication helpers ---
+# Nothing about the structured-output/validator pattern stops the model from
+# extracting the SAME underlying term or fact twice under slightly different
+# wording (e.g. "git add" vs "$ git add"), which would otherwise produce two
+# near-identical flashcards or two near-identical practice questions. These
+# helpers catch that at the source, right after parsing, before the facts/
+# cards are used to build anything else.
+def normalize_for_dedup(text: str) -> str:
+    """Normalize text so near-identical variants compare as equal.
+
+    Lowercases, strips a leading command-prompt "$", strips punctuation,
+    and collapses whitespace — so "Git Add", "git add", and "$ git add"
+    all normalize to the same key.
+    """
+    cleaned = text.strip().lower()
+    cleaned = re.sub(r"^\$\s*", "", cleaned)  # strip leading "$ " prompt symbol
+    cleaned = re.sub(r"[^a-z0-9\s]", "", cleaned)  # strip punctuation
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+def dedupe_facts(facts: List["ExtractedFact"]) -> List["ExtractedFact"]:
+    """Drop facts whose term or definition normalizes to one already kept.
+
+    Prevents near-duplicate terms from producing two near-identical
+    questions, and prevents near-duplicate definitions from being reused
+    as confusingly-similar distractors for each other.
+    """
+    seen_terms = set()
+    seen_defs = set()
+    deduped = []
+    for fact in facts:
+        term_key = normalize_for_dedup(fact.term)
+        def_key = normalize_for_dedup(fact.definition)
+        if term_key in seen_terms or def_key in seen_defs:
+            continue
+        seen_terms.add(term_key)
+        seen_defs.add(def_key)
+        deduped.append(fact)
+    return deduped
+
+def dedupe_flashcards(cards: List["FlashcardItem"]) -> List["FlashcardItem"]:
+    """Drop flashcards whose front or back normalizes to one already kept."""
+    seen_fronts = set()
+    seen_backs = set()
+    deduped = []
+    for card in cards:
+        front_key = normalize_for_dedup(card.front)
+        back_key = normalize_for_dedup(card.back)
+        if front_key in seen_fronts or back_key in seen_backs:
+            continue
+        seen_fronts.add(front_key)
+        seen_backs.add(back_key)
+        deduped.append(card)
+    return deduped
 
 # API key verification dependency (for future use)
 def verify_api_key(x_api_key: str = Header(None)):
@@ -626,106 +670,254 @@ def list_documents(request: Request):
     return {"documents": docs, "total": len(docs)}
 
 # Endpoint to generate a summary for a document
-# takes document id, retrieves text, constructs prompt, calls LLM, and returns summary
+# takes document id, retrieves text, constructs prompt, calls LLM, and returns structured summary
 @app.post("/generate/summary", dependencies=[Depends(verify_api_key)])
 @limiter.limit("10/minute") # limit to 10 summary requests per minute
 async def generate_summary(request: Request, req: StudyMaterialRequest):
-    """ Generate a summary for the specified document."""
-    
+    """ Generate a structured summary (overview, key concepts, important facts)
+    for the specified document, using Ollama's structured outputs feature so
+    the response always has real content in a consistent shape. """
+
     logger.info(f"Summary generation request for Document ID: {req.document_id}")
-    
+
     if req.document_id not in documents_db:
         logger.warning(f"Document not found for summary generation - ID: {req.document_id}")
         raise HTTPException(status_code=404, detail="Document not found.")
-    
-    doc = documents_db[req.document_id]
-    text = sanitize_for_llm(doc["text"], max_length=3000)  # limit to first 3000 chars for prompt size
-    
-    prompt = f"""Summarize the following study material in a concise manner. Include:
-1. Main topics covered
-2. Key concepts and definitions
-3. Important facts, events, or formulas
 
-Format as clear bullet points.
-Content:
-{text}
-    
-Summary:"""
-    summary = await generate_with_ollama(prompt)
-    logger.info(f"Summary generated for Document ID: {req.document_id}")
-    
+    doc = documents_db[req.document_id]
+    # No more truncating to the first 3000 characters — the whole document
+    # is walked in sections (map step) and then condensed (reduce step) below,
+    # so a long document actually gets summarized in full, not just its start.
+    full_text = sanitize_for_llm(doc["text"], max_length=len(doc["text"]) + 1)
+    chunks = chunk_text_for_llm(full_text, chunk_size_words=700)
+    logger.info(f"Summary: walking {len(chunks)} section(s) of Document ID {req.document_id}")
+
+    MAX_ATTEMPTS = 3
+
+    # --- Map step: condense each section into a few key points ---
+    all_key_points: List[str] = []
+    for i, chunk in enumerate(chunks, start=1):
+        chunk_prompt = f"""List the most important points from this section of a
+larger study document, as short factual bullet points. Only use information
+found in the text below — do not add outside facts or invent details.
+
+Section:
+{chunk}
+"""
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            response_text = await generate_with_ollama(
+                chunk_prompt,
+                format_schema=ChunkKeyPoints.model_json_schema(),
+                options_override={'temperature': 0.3, 'num_predict': 500, 'num_ctx': 4096}
+            )
+            if response_text.startswith("Error:"):
+                logger.warning(f"Ollama error summarizing section {i}/{len(chunks)} (attempt {attempt}): {response_text}")
+                continue
+            try:
+                chunk_parsed = ChunkKeyPoints.model_validate_json(response_text)
+                all_key_points.extend(chunk_parsed.key_points)
+                break
+            except Exception as e:
+                logger.warning(f"Section {i}/{len(chunks)} summary validation failed on attempt {attempt}/{MAX_ATTEMPTS}: {e}")
+        # if every attempt for this section failed, we just move on without it
+        # rather than failing the whole summary over one bad section
+
+    if not all_key_points:
+        logger.error(f"No sections could be summarized for Document ID {req.document_id}")
+        raise HTTPException(status_code=502, detail="The AI model is unavailable. Please try again.")
+
+    # --- Reduce step: condense all sections' key points into the final structured summary ---
+    combined_points = "\n".join(f"- {p}" for p in all_key_points)
+    final_prompt = f"""Below are key points extracted section-by-section from a full
+study document. Using ONLY these points, write a study summary. Do not add
+outside facts.
+
+Provide:
+- overview: a short paragraph (2-4 sentences) covering what the material is about
+- key_concepts: a list of the main concepts or terms covered
+- important_facts: a list of specific facts, definitions, or details worth remembering
+
+Key points:
+{combined_points}
+"""
+
+    parsed = None
+    last_error = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        response_text = await generate_with_ollama(
+            final_prompt,
+            format_schema=SummaryContent.model_json_schema(),
+            options_override={'temperature': 0.4, 'num_predict': 900, 'num_ctx': 4096}
+        )
+
+        if response_text.startswith("Error:"):
+            logger.error(f"Ollama error during final summary reduce (attempt {attempt}): {response_text}")
+            raise HTTPException(status_code=502, detail="The AI model is unavailable. Please try again.")
+
+        try:
+            parsed = SummaryContent.model_validate_json(response_text)
+            break
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Summary validation failed on attempt {attempt}/{MAX_ATTEMPTS}: {e}")
+
+    if parsed is None:
+        logger.error(f"All {MAX_ATTEMPTS} attempts failed validation for Document ID {req.document_id}: {last_error}")
+        raise HTTPException(status_code=502, detail="Failed to generate a valid summary after multiple attempts. Please try again.")
+
+    logger.info(f"Summary generated for Document ID: {req.document_id} from {len(chunks)} section(s)")
+
     return {"document_id": req.document_id,
             "material_type": "summary",
-            "content": summary,
+            "overview": parsed.overview,
+            "key_concepts": parsed.key_concepts,
+            "important_facts": parsed.important_facts,
             "created_at": datetime.now().isoformat()
             }
 
 # Endpoint to generate flashcards for a document
-# prompts LLM to create flashcards, parses response, and returns structured flashcard data, assigning topics automatically
+# Uses Ollama's structured outputs feature (same pattern as /generate/questions)
+# so every card is guaranteed to have real front/back content instead of
+# depending on the model following a FRONT:/BACK:/--- text format correctly.
 @app.post("/generate/flashcards", dependencies=[Depends(verify_api_key)])
 @limiter.limit("10/minute") # limit to 10 flashcard requests per minute
 async def generate_flashcards(request: Request, req: StudyMaterialRequest):
     """ Generate flashcards for the specified document."""
-    
+
     logger.info(f"Flashcard generation request for Document ID: {req.document_id}")
-    
+
     if req.document_id not in documents_db:
         logger.warning(f"Document not found for flashcard generation - ID: {req.document_id}")
         raise HTTPException(status_code=404, detail="Document not found.")
-    
+
     doc = documents_db[req.document_id]
-    text = sanitize_for_llm(doc["text"], max_length=3000) # limit to first 3000 chars for prompt size
-    
-    prompt = f"""Create 10 flashcards based on the following study material.
-Format EXACTLY as:
-FRONT: question or term
-BACK: answer or definition
----
+    # Walk the whole document in sections instead of truncating to the first
+    # 3000 characters, and ask for a handful of cards per section rather than
+    # a single fixed count — so a longer/richer document naturally yields
+    # more flashcards, roughly scaled to how much content it actually covers.
+    full_text = sanitize_for_llm(doc["text"], max_length=len(doc["text"]) + 1)
+    # Smaller than the summary's chunk size (700) — a slide deck's extracted
+    # text is often sparse, so a big word-count chunk can quietly swallow
+    # several distinct topics into one bucket. A smaller chunk here means
+    # more, more topic-focused sections, which is what actually drives the
+    # total flashcard count up on a bigger/richer document.
+    chunks = chunk_text_for_llm(full_text, chunk_size_words=350)
+    logger.info(f"Flashcards: walking {len(chunks)} section(s) of Document ID {req.document_id}")
 
-FRONT: question or term
-BACK: answer or definition
----
+    CARDS_PER_SECTION = 3
+    MAX_ATTEMPTS = 3
+    all_cards: List[FlashcardItem] = []
 
-(repeat 10 times total)
+    for i, chunk in enumerate(chunks, start=1):
+        prompt = f"""Create up to {CARDS_PER_SECTION} flashcards based on the section of
+study material below.
 
-Content to create flashcards from:
-{text}
+Only use information found in the section below — do not invent facts that
+aren't supported by it. Each flashcard's "front" should be a clear question
+or term, and "back" should be a complete, specific answer or definition of
+at least a few words — never a bare number, single word, or placeholder.
+If this section doesn't have enough distinct material for {CARDS_PER_SECTION}
+good flashcards, return fewer rather than padding with weak ones.
 
-Flashcards:"""
-    response = await generate_with_ollama(prompt)
-    
-    logger.info(f"Ollama response length: {len(response)}, First 200 chars: {response[:200]}")
-    
-    # parsing the response into flashcard objects
-    cards = []
-    
-    if '---' in response:
-        raw_cards = response.split('---')
-        cards = parse_flashcards_by_separator(raw_cards, doc)
-        
-    if len(cards) == 0:
-        cards = parse_flashcards_by_lines(response, doc)
-    
-    if len(cards) == 0:
-        cards = parse_flashcards_aggressive(response, doc)
-        
-    logger.info(f"Flashcards generated for Document ID: {req.document_id}")
-    
+Section:
+{chunk}
+"""
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            response_text = await generate_with_ollama(
+                prompt,
+                format_schema=FlashcardSet.model_json_schema(),
+                # Raised from 500 for the same reason as the questions extraction
+                # step — 3 verbose front/back pairs on a dense section can run
+                # past a tight token budget and get cut off mid-JSON.
+                options_override={'temperature': 0.4, 'num_predict': 900, 'num_ctx': 4096}
+            )
+
+            if response_text.startswith("Error:"):
+                logger.warning(f"Ollama error generating flashcards for section {i}/{len(chunks)} (attempt {attempt}): {response_text}")
+                continue
+
+            try:
+                section_parsed = FlashcardSet.model_validate_json(response_text)
+                all_cards.extend(section_parsed.flashcards)
+                break
+            except Exception as e:
+                logger.warning(f"Flashcard validation failed for section {i}/{len(chunks)} on attempt {attempt}/{MAX_ATTEMPTS}: {e}")
+        # if every attempt for this section failed, just move on without it
+        # rather than failing the whole request over one bad section
+
+    deduped_cards = dedupe_flashcards(all_cards)
+    if len(deduped_cards) < len(all_cards):
+        logger.info(
+            f"Removed {len(all_cards) - len(deduped_cards)} duplicate flashcard(s) "
+            f"for Document ID: {req.document_id}"
+        )
+
+    if len(deduped_cards) < 4:
+        logger.error(f"Not enough valid flashcards produced for Document ID {req.document_id}")
+        raise HTTPException(status_code=502, detail="Failed to generate enough valid flashcards. Please try again.")
+
+    logger.info(f"Flashcards generated for Document ID: {req.document_id} ({len(deduped_cards)} cards from {len(chunks)} section(s))")
+
     return {"document_id": req.document_id,
             "material_type": "flashcards",
-            "flashcards": cards,
-            "count": len(cards),
+            "flashcards": [item.model_dump() for item in deduped_cards],
+            "count": len(deduped_cards),
             "created_at": datetime.now().isoformat()
             }
 
-# Endpoint to generate practice questions for a document
-# requests LLM to create questions, parses response, and returns structured question data
+# Deterministically builds MCQ items from extracted facts — no LLM judgment
+# involved in deciding what's "correct", which is what prevents the model
+# from mixing up related concepts (e.g. git add vs commit) and mislabeling
+# the answer key. Distractors are other REAL extracted definitions from
+# elsewhere in the document, never invented text.
+def build_mcq_from_facts(
+    facts: List[ExtractedFact],
+    num_questions: int = None,
+    distractor_pool: List[ExtractedFact] = None,
+) -> List[MCQItem]:
+    """Build MCQs asking about `facts`, pulling wrong-answer options from
+    `distractor_pool` (defaults to `facts` itself). Passing a bigger pool
+    (e.g. every fact extracted from the whole document) lets this be called
+    per-section while still drawing distractors from the full document,
+    instead of only from that one section's handful of facts."""
+    pool = distractor_pool if distractor_pool is not None else facts
+    if len(pool) < 4:
+        raise ValueError("Not enough extracted facts to build multiple-choice questions (need at least 4).")
+
+    chosen = facts if num_questions is None else random.sample(facts, min(num_questions, len(facts)))
+    questions = []
+
+    for fact in chosen:
+        correct_def = fact.definition
+        other_defs = [f.definition for f in pool if f.term != fact.term]
+        if len(other_defs) < 3:
+            continue  # not enough distinct distractors available for this fact — skip it
+        distractors = random.sample(other_defs, 3)
+
+        options = [correct_def] + distractors
+        random.shuffle(options)
+        correct_index = options.index(correct_def)
+
+        questions.append(MCQItem(
+            question=f'What best describes "{fact.term}"?',
+            options=options,
+            correct=correct_index,
+            source_snippet=correct_def
+        ))
+
+    return questions
+
+# Endpoint to generate practice questions for a document.
+# Uses an extract-then-build approach: the LLM's only job is extracting
+# term/definition facts from the source text (an easy task for a small local
+# model). The actual questions — including which answer is correct — are
+# constructed in plain Python from those facts (see build_mcq_from_facts),
+# so answer-key mistakes structurally can't happen the way they could when
+# a single LLM call both invents a question AND judges its own answer.
 @app.post("/generate/questions", dependencies=[Depends(verify_api_key)])
 @limiter.limit("10/minute") # limit to 10 question requests per minute
 async def generate_questions(request: Request, req: StudyMaterialRequest):
-    """ Generate multiple-choice practice questions for the specified document,
-    using Ollama's structured outputs feature so the response is guaranteed to
-    match MCQSet instead of being parsed out of free-form text. """
+    """ Generate multiple-choice practice questions for the specified document."""
 
     logger.info(f"Question generation request for Document ID: {req.document_id}")
 
@@ -734,61 +926,124 @@ async def generate_questions(request: Request, req: StudyMaterialRequest):
         raise HTTPException(status_code=404, detail="Document not found.")
 
     doc = documents_db[req.document_id]
-    text = sanitize_for_llm(doc["text"], max_length=3000)  # limit to first 3000 chars for prompt size
+    # Walk the whole document in sections instead of truncating to the first
+    # 3000 characters. Each section is treated as roughly one "topic", and we
+    # aim for QUESTIONS_PER_TOPIC questions from each one, so a longer/richer
+    # document naturally yields more questions instead of a fixed count.
+    # Smaller chunk than the summary's (700) — sparse slide-deck text can
+    # otherwise collapse several distinct topics into one bucket, which is
+    # what capped the last run at only 3 "topics" for a whole lecture deck.
+    full_text = sanitize_for_llm(doc["text"], max_length=len(doc["text"]) + 1)
+    chunks = chunk_text_for_llm(full_text, chunk_size_words=350)
+    logger.info(f"Questions: walking {len(chunks)} section(s) of Document ID {req.document_id}")
 
-    prompt = f"""Based on the study material below, generate 8 multiple-choice questions.
-Each question must have exactly 4 options and the 0-based index of the correct option.
-
-Only use information found in the study material below. Do not invent facts,
-terms, or numbers that aren't supported by it.
-
-Every option must be a complete, specific answer phrase of at least a few
-words — for example "Define your username for the repository", not "1",
-"2", "Option A", or any other bare number, letter, or placeholder text.
-If the source material is terse (e.g. a list of commands or short
-definitions), invent plausible-sounding but incorrect variations of the
-correct answer as distractors, rather than leaving an option empty or vague.
-
-Study material:
-{text}
-"""
-
+    QUESTIONS_PER_TOPIC = 2
+    MAX_TOTAL_QUESTIONS = 20  # cap for big documents — a small doc can still end up with fewer
     MAX_ATTEMPTS = 3
-    parsed = None
-    last_error = None
 
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        response_text = await generate_with_ollama(
-            prompt,
-            format_schema=MCQSet.model_json_schema(),
-            options_override={
-                'temperature': 0.3,   # low — single-format task, prioritize grounded correctness over variety
-                'num_predict': 1200,
-            }
-        )
+    # --- Extraction pass: pull facts out of each section separately ---
+    # section_fact_groups keeps facts grouped by which section they came
+    # from (our proxy for "topic"), so we can later pick ~2 per section.
+    section_fact_groups: List[List[ExtractedFact]] = []
+    for i, chunk in enumerate(chunks, start=1):
+        extraction_prompt = f"""Extract the key terms/commands and their definitions from
+this section of a larger study document. For each one, give:
+- term: the name of the command or concept
+- definition: what it does, taken directly from the section below — do not
+  paraphrase loosely or add information that isn't there
 
-        if response_text.startswith("Error:"):
-            logger.error(f"Ollama error during question generation (attempt {attempt}): {response_text}")
-            raise HTTPException(status_code=502, detail="The AI model is unavailable. Please try again.")
+Extract every distinct term you can find in this section.
 
-        try:
-            parsed = MCQSet.model_validate_json(response_text)
-            break  # got a valid, well-formed set — stop retrying
-        except Exception as e:
-            last_error = e
-            logger.warning(f"Question validation failed on attempt {attempt}/{MAX_ATTEMPTS}: {e}")
+Section:
+{chunk}
+"""
+        section_facts = None
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            response_text = await generate_with_ollama(
+                extraction_prompt,
+                format_schema=ExtractedFacts.model_json_schema(),
+                options_override={
+                    'temperature': 0.2,   # very low — extraction should be literal, not creative
+                    # 600 was too tight for dense sections — the model was
+                    # hitting this limit mid-JSON and getting cut off
+                    # (causing "EOF while parsing a string" validation errors
+                    # on every retry). Raised so extraction can actually finish.
+                    'num_predict': 1400,
+                    'num_ctx': 4096,
+                }
+            )
 
-    if parsed is None:
-        logger.error(f"All {MAX_ATTEMPTS} attempts failed validation for Document ID {req.document_id}: {last_error}")
+            if response_text.startswith("Error:"):
+                logger.warning(f"Ollama error extracting facts for section {i}/{len(chunks)} (attempt {attempt}): {response_text}")
+                continue
+
+            try:
+                parsed = ExtractedFacts.model_validate_json(response_text)
+                section_facts = dedupe_facts(parsed.facts)
+                break
+            except Exception as e:
+                logger.warning(f"Fact extraction failed validation for section {i}/{len(chunks)} on attempt {attempt}/{MAX_ATTEMPTS}: {e}")
+        # if every attempt for this section failed, or it had nothing distinct
+        # to extract, just move on without it rather than failing the whole request
+        if section_facts:
+            section_fact_groups.append(section_facts)
+
+    if not section_fact_groups:
+        logger.error(f"No sections yielded usable facts for Document ID {req.document_id}")
         raise HTTPException(
             status_code=502,
-            detail="Failed to generate valid questions after multiple attempts. This document's content may be too sparse for good multiple-choice distractors — try again, or try a document with more descriptive text."
+            detail="Couldn't extract enough distinct facts from this document to build good questions. Try a document with more distinct terms or concepts."
         )
 
-    logger.info(f"Questions generated for Document ID: {req.document_id}")
+    # Global pool: every unique fact across the whole document, used as the
+    # source of distractors so wrong answers stay real and document-grounded
+    # even when a section only had one or two facts of its own.
+    all_facts = [fact for group in section_fact_groups for fact in group]
+    global_facts = dedupe_facts(all_facts)
+    if len(all_facts) > len(global_facts):
+        logger.info(
+            f"Removed {len(all_facts) - len(global_facts)} duplicate fact(s) across sections "
+            f"for Document ID: {req.document_id}"
+        )
+
+    if len(global_facts) < 4:
+        logger.error(f"Not enough unique facts overall for Document ID {req.document_id}")
+        raise HTTPException(
+            status_code=502,
+            detail="Couldn't extract enough distinct facts from this document to build good questions. Try a document with more distinct terms or concepts."
+        )
+
+    global_terms = {normalize_for_dedup(f.term) for f in global_facts}
+
+    # --- Build pass: ~2 questions per section/topic, distractors from the whole document ---
+    mcq_items: List[MCQItem] = []
+    used_terms = set()  # guards against two sections both surfacing the same term
+    for group in section_fact_groups:
+        # keep only facts from this section that survived the GLOBAL dedup pass
+        survivors = [f for f in group if normalize_for_dedup(f.term) in global_terms and normalize_for_dedup(f.term) not in used_terms]
+        if not survivors:
+            continue
+        picked = random.sample(survivors, min(QUESTIONS_PER_TOPIC, len(survivors)))
+        for fact in picked:
+            used_terms.add(normalize_for_dedup(fact.term))
+        try:
+            mcq_items.extend(build_mcq_from_facts(picked, distractor_pool=global_facts))
+        except ValueError as e:
+            logger.warning(f"Skipping a section's questions — {e}")
+
+    if not mcq_items:
+        logger.error(f"MCQ construction produced nothing for Document ID {req.document_id}")
+        raise HTTPException(status_code=502, detail="Failed to build any valid questions from this document. Please try again.")
+
+    # Cap the total for big/many-section documents — a small document that
+    # only produced a handful of questions is left as-is, no padding needed.
+    if len(mcq_items) > MAX_TOTAL_QUESTIONS:
+        mcq_items = random.sample(mcq_items, MAX_TOTAL_QUESTIONS)
+
+    logger.info(f"Questions generated for Document ID: {req.document_id} ({len(mcq_items)} questions from {len(chunks)} section(s))")
     return {"document_id": req.document_id,
             "material_type": "questions",
-            "mcq": [item.model_dump() for item in parsed.mcq],
+            "mcq": [item.model_dump() for item in mcq_items],
             "created_at": datetime.now().isoformat()
             }
 
