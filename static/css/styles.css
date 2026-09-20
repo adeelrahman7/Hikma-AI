@@ -1470,3 +1470,190 @@ Navigation Bar
   -webkit-background-clip: text;
   animation: moveGradient 6s linear infinite;
 }
+
+/* =====================
+Dashboard
+===================== */
+.dashboard-container {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 60px 20px 80px;
+}
+
+.dashboard-header {
+  text-align: center;
+  margin-bottom: 36px;
+}
+
+.dashboard-header h1 {
+  font-size: 2.2rem;
+  font-weight: 700;
+  margin: 0 0 8px;
+}
+
+.dashboard-subtitle {
+  color: #777;
+  font-size: 1rem;
+  margin: 0;
+}
+
+.dashboard-stats {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 40px;
+}
+
+.stat-tile {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 20px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 140px;
+}
+
+.stat-tile-value {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.stat-tile-label {
+  font-size: 0.82rem;
+  color: #888;
+  font-weight: 600;
+  margin-top: 4px;
+  text-align: center;
+}
+
+/* The "continue where you left off" tile — same gradient as the Arabic
+   title, so it draws the eye as the one actionable stat in the row. */
+.stat-tile-accent {
+  cursor: pointer;
+  border-color: transparent;
+  background: linear-gradient(#fff, #fff) padding-box,
+              linear-gradient(90deg, #5227FF, #a99fff, #841198, #d00494, #ec484e, #5227FF) border-box;
+  border: 2px solid transparent;
+  transition: transform 0.15s ease;
+}
+
+.stat-tile-accent:hover {
+  transform: scale(1.03);
+}
+
+.stat-tile-doc-name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--ink);
+  margin-top: 4px;
+  text-align: center;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-loading,
+.dashboard-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 60px 20px;
+  color: #777;
+}
+
+.doc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 20px;
+}
+
+.doc-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 26px;
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.doc-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 25px rgba(0,0,0,0.08);
+}
+
+.doc-card-icon {
+  font-size: 1.8rem;
+  margin-bottom: 10px;
+}
+
+.doc-card-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin: 0 0 6px;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.doc-card-meta {
+  font-size: 0.8rem;
+  color: #888;
+  margin: 0 0 14px;
+}
+
+.doc-card-topics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 18px;
+  min-height: 24px;
+}
+
+.doc-topic-chip {
+  background: #efeadd;
+  color: var(--ink);
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+
+.doc-card-btn {
+  margin-top: auto;
+  width: 100%;
+  text-align: center;
+  padding: 10px 16px;
+  font-size: 0.88rem;
+}
+
+.dashboard-upload-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 36px;
+}
+
+.upload-more-btn {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+
+@media (max-width: 640px) {
+  .dashboard-container {
+    padding: 40px 16px 60px;
+  }
+
+  .doc-grid {
+    grid-template-columns: 1fr;
+  }
+}

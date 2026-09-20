@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Dashboard | Hikma AI</title>
+
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Readex+Pro:wght@500;700&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="/static/css/styles.css" />
+</head>
+<body>
+
+<!-- Injected by nav.js -->
+<div id="main-nav"></div>
+<div id="nav-root"></div>
+<script src="/static/js/nav.js"></script>
+
+<main class="dashboard-container" id="dashboardContainer">
+
+    <div class="dashboard-header">
+    <h1>Your Documents</h1>
+    <p class="dashboard-subtitle">Pick up where you left off, or upload something new.</p>
+    </div>
+
+    <div class="dashboard-stats" id="dashboardStats">
+    <!-- filled in by loadDashboard() -->
+    </div>
+
+    <!-- Shown while /documents is loading -->
+    <div class="dashboard-loading" id="dashboardLoading">
+    <div class="spinner"></div>
+    <p>Loading your documents...</p>
+    </div>
+
+    <!-- Shown if /documents can't be reached -->
+    <div class="dashboard-error" id="dashboardError" style="display:none;">
+    <p id="dashboardErrorText">Couldn't load your documents.</p>
+    <button class="check-btn" type="button" onclick="loadDashboard()">Try again</button>
+    </div>
+
+    <!-- Shown when there are zero documents -->
+    <section class="empty-state" id="dashboardEmptyState" style="display:none;">
+    <div class="empty-state-icon">📄</div>
+    <h2>No documents yet</h2>
+    <p>Upload a study document to generate a summary, flashcards, and practice questions.</p>
+    <a href="upload.html" class="cta-btn">Upload a document</a>
+    </section>
+
+    <!-- The actual document grid -->
+    <div class="doc-grid" id="docGrid" style="display:none;"></div>
+
+    <div class="dashboard-upload-more" id="dashboardUploadMore" style="display:none;">
+    <a href="upload.html" class="cta-btn upload-more-btn">+ Upload another document</a>
+    </div>
+
+</main>
+
+<script>
+    const API_URL = "http://localhost:8000";
+    const API_KEY = null; // set this if API_KEY_ENABLED=true in your .env
+
+    const statsEl = document.getElementById("dashboardStats");
+    const loadingEl = document.getElementById("dashboardLoading");
+    const errorEl = document.getElementById("dashboardError");
+    const errorTextEl = document.getElementById("dashboardErrorText");
+    const emptyStateEl = document.getElementById("dashboardEmptyState");
+    const docGridEl = document.getElementById("docGrid");
+    const uploadMoreEl = document.getElementById("dashboardUploadMore");
+
+    function messageForStatus(status, detail) {
+    switch (status) {
+        case 429:
+        return "Too many requests right now — wait a minute and try again.";
+        case 500:
+        return "Something went wrong on the server while listing your documents.";
+        default:
+        return detail || "Something went wrong. Please try again.";
+    }
+    }
+
+    function formatDate(isoString) {
+    if (!isoString) return "";
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString;
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    }
+
+    // Opens a document in the Study page, the same way upload.html does
+    // right after a fresh upload — just setting the same localStorage keys
+    // study.html already reads on load.
+    function continueStudying(doc) {
+    localStorage.setItem("documentId", doc.id);
+    localStorage.setItem("documentName", doc.filename);
+    localStorage.setItem("documentTopics", JSON.stringify(doc.topics || []));
+    window.location.href = "study.html";
+    }
+
+    function renderStats(docs) {
+    const totalDocs = docs.length;
+    const uniqueTopics = new Set();
+    docs.forEach(d => (d.topics || []).forEach(t => uniqueTopics.add(t)));
+
+    const lastActiveId = localStorage.getItem("documentId");
+    const lastActiveDoc = docs.find(d => d.id === lastActiveId);
+
+    statsEl.innerHTML = `
+        <div class="stat-tile">
+        <span class="stat-tile-value">${totalDocs}</span>
+        <span class="stat-tile-label">${totalDocs === 1 ? "document" : "documents"} uploaded</span>
+        </div>
+        <div class="stat-tile">
+        <span class="stat-tile-value">${uniqueTopics.size}</span>
+        <span class="stat-tile-label">topics covered</span>
+        </div>
+        ${lastActiveDoc ? `
+        <div class="stat-tile stat-tile-accent" id="continueTile">
+            <span class="stat-tile-label">Continue studying</span>
+            <span class="stat-tile-doc-name">${lastActiveDoc.filename}</span>
+        </div>
+        ` : ""}
+    `;
+
+    const continueTile = document.getElementById("continueTile");
+    if (continueTile && lastActiveDoc) {
+        continueTile.addEventListener("click", () => continueStudying(lastActiveDoc));
+    }
+    }
+
+    function renderDocGrid(docs) {
+    docGridEl.innerHTML = docs.map(doc => {
+        const topicChips = (doc.topics || []).slice(0, 4)
+        .map(t => `<span class="doc-topic-chip">${t}</span>`).join("");
+        return `
+        <div class="doc-card">
+            <div class="doc-card-icon">📄</div>
+            <h3 class="doc-card-title">${doc.filename}</h3>
+            <p class="doc-card-meta">Uploaded ${formatDate(doc.upload_date)} &middot; ${doc.page_count} page(s)</p>
+            <div class="doc-card-topics">${topicChips}</div>
+            <button class="cta-btn doc-card-btn" type="button" data-doc-id="${doc.id}">Continue Studying →</button>
+        </div>
+        `;
+    }).join("");
+
+    docGridEl.querySelectorAll(".doc-card-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+        const doc = docs.find(d => d.id === btn.dataset.docId);
+        if (doc) continueStudying(doc);
+        });
+    });
+    }
+
+    async function loadDashboard() {
+    loadingEl.style.display = "flex";
+    errorEl.style.display = "none";
+    emptyStateEl.style.display = "none";
+    docGridEl.style.display = "none";
+    uploadMoreEl.style.display = "none";
+    statsEl.innerHTML = "";
+
+    const headers = {};
+    if (API_KEY) headers["X-API-Key"] = API_KEY;
+
+    try {
+        const response = await fetch(`${API_URL}/documents`, { headers });
+        let data = null;
+        try {
+        data = await response.json();
+        } catch {
+        // fall through to generic error below
+        }
+
+        if (!response.ok) {
+        throw new Error(messageForStatus(response.status, data?.detail));
+        }
+
+        const docs = data?.documents || [];
+        loadingEl.style.display = "none";
+
+        if (docs.length === 0) {
+        emptyStateEl.style.display = "flex";
+        return;
+        }
+
+        // Most recently uploaded first
+        docs.sort((a, b) => new Date(b.upload_date) - new Date(a.upload_date));
+
+        renderStats(docs);
+        renderDocGrid(docs);
+        docGridEl.style.display = "grid";
+        uploadMoreEl.style.display = "flex";
+    } catch (err) {
+        loadingEl.style.display = "none";
+        errorTextEl.textContent = err.message || "Couldn't reach the server. Is the backend running?";
+        errorEl.style.display = "flex";
+    }
+    }
+
+    loadDashboard();
+</script>
+</body>
+</html>
