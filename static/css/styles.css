@@ -20,6 +20,43 @@ body {
   font-family: 'Inter', sans-serif;
   background: #ffffff;
   color: #000000;
+  overflow-x: hidden;
+}
+
+/* Page transitions — every internal navigation slides right.
+   Animated on body's own children (never on <body> itself) and skips
+   #nav-root, which holds the fixed-position sidebar/overlay: putting a
+   transform on <body> would make it the containing block for those
+   position:fixed elements and break their viewport-relative positioning. */
+body > *:not(#nav-root) {
+  animation: pageSlideIn 0.35s ease forwards;
+}
+
+@keyframes pageSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-40px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+body.page-exit > *:not(#nav-root) {
+  animation: pageSlideOut 0.3s ease forwards;
+  pointer-events: none;
+}
+
+@keyframes pageSlideOut {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(40px);
+  }
 }
 
 /* =====================
@@ -224,6 +261,23 @@ Sidebar / account menu
   font-size: 16px;
   width: 20px;
   text-align: center;
+}
+
+/* Circular line-icon badge for each sidebar link, e.g. Home/Dashboard/Upload */
+.sidebar-icon-circle {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sidebar-icon-circle svg {
+  width: 16px;
+  height: 16px;
 }
 
 .sidebar-footer {
@@ -1643,6 +1697,7 @@ Dashboard
   padding: 26px;
   display: flex;
   flex-direction: column;
+  position: relative;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 
@@ -1660,12 +1715,98 @@ Dashboard
   font-size: 1.05rem;
   font-weight: 700;
   margin: 0 0 6px;
+  padding-right: 26px;
   line-height: 1.3;
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+}
+
+/* Per-document "..." menu (rename / delete) */
+.doc-card-menu {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+}
+
+.doc-card-menu-btn {
+  width: 30px;
+  height: 30px;
+  border: none;
+  background: transparent;
+  border-radius: 50%;
+  font-size: 1.15rem;
+  line-height: 1;
+  color: #888;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.doc-card-menu-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--ink);
+}
+
+.doc-card-menu-dropdown {
+  position: absolute;
+  top: 36px;
+  right: 0;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  min-width: 140px;
+  padding: 6px;
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 5;
+}
+
+.doc-card-menu-dropdown.open {
+  display: flex;
+}
+
+.doc-card-menu-item {
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 9px 10px;
+  border-radius: 7px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--ink);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.doc-card-menu-item:hover {
+  background: var(--panel);
+}
+
+.doc-card-menu-item.danger {
+  color: var(--bad);
+}
+
+.doc-card-menu-item.danger:hover {
+  background: #fdecec;
+}
+
+.doc-card-rename-input {
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1.3;
+  margin: 0 0 6px;
+  padding: 4px 6px;
+  border: 1px solid var(--accent-dark);
+  border-radius: 6px;
+  width: 100%;
+  font-family: inherit;
+  box-sizing: border-box;
 }
 
 .doc-card-meta {
@@ -1709,6 +1850,88 @@ Dashboard
   background: transparent;
   color: var(--ink);
   border: 1px solid var(--line);
+}
+
+/* Confirm dialog (delete, etc.) — replaces the browser's confirm() */
+.confirm-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+  z-index: 70;
+}
+
+.confirm-modal-overlay.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.confirm-modal {
+  background: #ffffff;
+  border-radius: var(--radius-md);
+  padding: 26px 26px 22px;
+  max-width: 380px;
+  width: 100%;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
+  transform: translateY(8px) scale(0.97);
+  transition: transform 0.18s ease;
+}
+
+.confirm-modal-overlay.open .confirm-modal {
+  transform: translateY(0) scale(1);
+}
+
+.confirm-modal h3 {
+  margin: 0 0 10px;
+  font-size: 1.15rem;
+}
+
+.confirm-modal p {
+  margin: 0 0 22px;
+  color: #555;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.confirm-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.confirm-modal-btn {
+  border: none;
+  padding: 9px 20px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.85rem;
+  font-family: 'Readex Pro', sans-serif;
+  cursor: pointer;
+}
+
+.confirm-modal-btn.cancel {
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+
+.confirm-modal-btn.cancel:hover {
+  background: #eee;
+}
+
+.confirm-modal-btn.danger {
+  background: var(--bad);
+  color: #fff;
+}
+
+.confirm-modal-btn.danger:hover {
+  opacity: 0.88;
 }
 
 @media (max-width: 640px) {

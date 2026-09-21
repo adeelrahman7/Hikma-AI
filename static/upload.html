@@ -151,7 +151,7 @@
         localStorage.setItem("documentName", data.filename || file.name);
         localStorage.setItem("documentTopics", JSON.stringify(data.topics_found || []));
 
-        window.location.href = "dashboard.html";
+        navigateWithTransition("dashboard.html");
       } catch (error) {
         console.error("Upload failed:", error);
         showUploadError("Couldn't reach the server. Is the backend running?");

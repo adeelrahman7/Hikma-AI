@@ -1,6 +1,41 @@
 // Shared sidebar/nav logic for landingpage.html, upload.html, and study.html.
 // Single source of truth for header and sidebar behavior.
 
+const PAGE_TRANSITION_MS = 300;
+
+// Call this instead of setting window.location.href directly, from any
+// inline script (button onclick handlers, fetch callbacks, etc.), so
+// programmatic navigation gets the same slide-out as clicked links.
+function navigateWithTransition(url) {
+  document.body.classList.add("page-exit");
+  setTimeout(() => {
+    window.location.href = url;
+  }, PAGE_TRANSITION_MS);
+}
+window.navigateWithTransition = navigateWithTransition;
+
+// Intercepts clicks on same-page-set links (relative/absolute .html hrefs)
+// so the current page slides out before the browser navigates away.
+// Leaves external links, hash links, and new-tab links alone.
+function interceptInternalLinks() {
+  document.addEventListener("click", (e) => {
+    const link = e.target.closest("a");
+    if (!link) return;
+
+    const href = link.getAttribute("href");
+    if (!href) return;
+    if (href.startsWith("#")) return;
+    if (href.startsWith("http://") || href.startsWith("https://")) return;
+    if (link.target === "_blank") return;
+    if (!href.endsWith(".html")) return;
+
+    e.preventDefault();
+    navigateWithTransition(href);
+  });
+}
+
+document.addEventListener("DOMContentLoaded", interceptInternalLinks);
+
 function initNav() {
   const menuBtn = document.getElementById("menuBtn");
   const sidebar = document.getElementById("sidebar");
@@ -37,13 +72,31 @@ function initNav() {
       if (sidebarAvatar) sidebarAvatar.textContent = "AR";
       if (sidebarUsername) sidebarUsername.textContent = "Adeel Rahman";
       if (sidebarEmail) sidebarEmail.textContent = "adeel@hikma.ai";
-      authToggleBtn.innerHTML = '<span class="sidebar-icon">↩</span> Log out';
+      authToggleBtn.innerHTML = `
+        <span class="sidebar-icon-circle">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 20H5.5A1.5 1.5 0 0 1 4 18.5v-13A1.5 1.5 0 0 1 5.5 4H9"/>
+            <path d="M16 16l4-4-4-4"/>
+            <path d="M20 12H9"/>
+          </svg>
+        </span>
+        Log out
+      `;
       authToggleBtn.classList.add("logout");
     } else {
       if (sidebarAvatar) sidebarAvatar.textContent = "?";
       if (sidebarUsername) sidebarUsername.textContent = "Guest";
       if (sidebarEmail) sidebarEmail.textContent = "Not signed in";
-      authToggleBtn.innerHTML = '<span class="sidebar-icon">→</span> Log in';
+      authToggleBtn.innerHTML = `
+        <span class="sidebar-icon-circle">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M15 4h3.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H15"/>
+            <path d="M8 8l-4 4 4 4"/>
+            <path d="M4 12h11"/>
+          </svg>
+        </span>
+        Log in
+      `;
       authToggleBtn.classList.remove("logout");
     }
   });

@@ -60,6 +60,18 @@
 
 </main>
 
+<!-- Confirm dialog (used for delete) -->
+<div class="confirm-modal-overlay" id="confirmModalOverlay" style="display: none;">
+    <div class="confirm-modal" role="alertdialog" aria-labelledby="confirmModalTitle" aria-describedby="confirmModalMessage">
+    <h3 id="confirmModalTitle">Delete document?</h3>
+    <p id="confirmModalMessage"></p>
+    <div class="confirm-modal-actions">
+        <button class="confirm-modal-btn cancel" type="button" id="confirmModalCancel">Cancel</button>
+        <button class="confirm-modal-btn danger" type="button" id="confirmModalConfirm">Delete</button>
+    </div>
+    </div>
+</div>
+
 <script>
     const API_URL = "http://localhost:8000";
     const API_KEY = null; // set this if API_KEY_ENABLED=true in your .env
@@ -97,7 +109,7 @@
     localStorage.setItem("documentId", doc.id);
     localStorage.setItem("documentName", doc.filename);
     localStorage.setItem("documentTopics", JSON.stringify(doc.topics || []));
-    window.location.href = "study.html";
+    navigateWithTransition("study.html");
     }
 
     function renderStats(docs) {
@@ -131,14 +143,73 @@
     }
     }
 
+    // Escapes text dropped into innerHTML (filenames can contain &, <, >, quotes).
+    function escapeHtml(str) {
+    return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    // Custom confirm dialog — replaces the browser's confirm() with a styled
+    // modal that matches the rest of the app. Resolves true/false, same as
+    // confirm() would, so callers can just `await` it.
+    const confirmModalOverlay = document.getElementById("confirmModalOverlay");
+    const confirmModalMessage = document.getElementById("confirmModalMessage");
+    const confirmModalCancelBtn = document.getElementById("confirmModalCancel");
+    const confirmModalConfirmBtn = document.getElementById("confirmModalConfirm");
+
+    function showConfirmModal(message) {
+    confirmModalMessage.textContent = message;
+    confirmModalOverlay.style.display = "flex";
+    // Force layout, then add "open" so the fade/scale transition actually plays
+    // instead of jumping straight to its end state.
+    requestAnimationFrame(() => confirmModalOverlay.classList.add("open"));
+
+    return new Promise((resolve) => {
+        const cleanup = (result) => {
+        confirmModalOverlay.classList.remove("open");
+        // Let the fade-out transition finish before actually hiding it.
+        setTimeout(() => { confirmModalOverlay.style.display = "none"; }, 180);
+        confirmModalConfirmBtn.removeEventListener("click", onConfirm);
+        confirmModalCancelBtn.removeEventListener("click", onCancel);
+        confirmModalOverlay.removeEventListener("click", onOverlayClick);
+        document.removeEventListener("keydown", onKeydown);
+        resolve(result);
+        };
+        const onConfirm = () => cleanup(true);
+        const onCancel = () => cleanup(false);
+        const onOverlayClick = (e) => {
+        if (e.target === confirmModalOverlay) cleanup(false);
+        };
+        const onKeydown = (e) => {
+        if (e.key === "Escape") cleanup(false);
+        };
+
+        confirmModalConfirmBtn.addEventListener("click", onConfirm);
+        confirmModalCancelBtn.addEventListener("click", onCancel);
+        confirmModalOverlay.addEventListener("click", onOverlayClick);
+        document.addEventListener("keydown", onKeydown);
+    });
+    }
+
     function renderDocGrid(docs) {
     docGridEl.innerHTML = docs.map(doc => {
         const topicChips = (doc.topics || []).slice(0, 4)
-        .map(t => `<span class="doc-topic-chip">${t}</span>`).join("");
+        .map(t => `<span class="doc-topic-chip">${escapeHtml(t)}</span>`).join("");
         return `
-        <div class="doc-card">
+        <div class="doc-card" data-doc-id="${doc.id}">
+            <div class="doc-card-menu">
+            <button class="doc-card-menu-btn" type="button" data-doc-id="${doc.id}" aria-label="Document options">⋮</button>
+            <div class="doc-card-menu-dropdown" data-doc-id="${doc.id}">
+                <button class="doc-card-menu-item" type="button" data-action="rename" data-doc-id="${doc.id}">Rename</button>
+                <button class="doc-card-menu-item danger" type="button" data-action="delete" data-doc-id="${doc.id}">Delete</button>
+            </div>
+            </div>
             <div class="doc-card-icon">📄</div>
-            <h3 class="doc-card-title">${doc.filename}</h3>
+            <h3 class="doc-card-title" data-doc-id="${doc.id}">${escapeHtml(doc.filename)}</h3>
             <p class="doc-card-meta">Uploaded ${formatDate(doc.upload_date)} &middot; ${doc.page_count} page(s)</p>
             <div class="doc-card-topics">${topicChips}</div>
             <button class="cta-btn doc-card-btn" type="button" data-doc-id="${doc.id}">Continue Studying →</button>
@@ -152,7 +223,140 @@
         if (doc) continueStudying(doc);
         });
     });
+
+    // "..." button — opens/closes this card's dropdown, closing any other open one
+    docGridEl.querySelectorAll(".doc-card-menu-btn").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const dropdown = docGridEl.querySelector(
+            `.doc-card-menu-dropdown[data-doc-id="${btn.dataset.docId}"]`
+        );
+        const alreadyOpen = dropdown.classList.contains("open");
+        docGridEl.querySelectorAll(".doc-card-menu-dropdown.open").forEach(d => d.classList.remove("open"));
+        if (!alreadyOpen) dropdown.classList.add("open");
+        });
+    });
+
+    // Rename / Delete menu items
+    docGridEl.querySelectorAll(".doc-card-menu-item").forEach(item => {
+        item.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const doc = docs.find(d => d.id === item.dataset.docId);
+        if (!doc) return;
+        item.closest(".doc-card-menu-dropdown").classList.remove("open");
+        if (item.dataset.action === "rename") startRename(doc);
+        if (item.dataset.action === "delete") deleteDocument(doc);
+        });
+    });
     }
+
+    // Swaps a doc card's title for an inline text input so renaming happens
+    // right on the card instead of a separate dialog.
+    function startRename(doc) {
+    const titleEl = docGridEl.querySelector(`.doc-card-title[data-doc-id="${doc.id}"]`);
+    if (!titleEl) return;
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "doc-card-rename-input";
+    input.value = doc.filename;
+    input.maxLength = 255;
+    titleEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let settled = false;
+    const commit = async () => {
+        if (settled) return;
+        settled = true;
+        const newName = input.value.trim();
+        if (!newName || newName === doc.filename) {
+        loadDashboard();
+        return;
+        }
+        await submitRename(doc, newName);
+    };
+    const cancel = () => {
+        if (settled) return;
+        settled = true;
+        loadDashboard();
+    };
+
+    input.addEventListener("blur", commit);
+    input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+        if (e.key === "Escape") { e.preventDefault(); cancel(); }
+    });
+    }
+
+    async function submitRename(doc, newName) {
+    const headers = { "Content-Type": "application/json" };
+    if (API_KEY) headers["X-API-Key"] = API_KEY;
+
+    try {
+        const response = await fetch(`${API_URL}/documents/${doc.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ new_filename: newName }),
+        });
+        let data = null;
+        try { data = await response.json(); } catch {}
+
+        if (!response.ok) {
+        alert(messageForStatus(response.status, data?.detail) || "Couldn't rename that document.");
+        loadDashboard();
+        return;
+        }
+
+        // Keep localStorage in sync if this is the document currently open in Study
+        if (localStorage.getItem("documentId") === doc.id) {
+        localStorage.setItem("documentName", newName);
+        }
+        loadDashboard();
+    } catch (err) {
+        console.error("Rename failed:", err);
+        alert("Couldn't reach the server. Is the backend running?");
+        loadDashboard();
+    }
+    }
+
+    async function deleteDocument(doc) {
+    const ok = await showConfirmModal(`Delete "${doc.filename}"? This can't be undone.`);
+    if (!ok) return;
+
+    const headers = {};
+    if (API_KEY) headers["X-API-Key"] = API_KEY;
+
+    try {
+        const response = await fetch(`${API_URL}/documents/${doc.id}`, {
+        method: "DELETE",
+        headers,
+        });
+        let data = null;
+        try { data = await response.json(); } catch {}
+
+        if (!response.ok) {
+        alert(messageForStatus(response.status, data?.detail) || "Couldn't delete that document.");
+        return;
+        }
+
+        // If the deleted document was the one open in Study, clear that pointer
+        if (localStorage.getItem("documentId") === doc.id) {
+        localStorage.removeItem("documentId");
+        localStorage.removeItem("documentName");
+        localStorage.removeItem("documentTopics");
+        }
+        loadDashboard();
+    } catch (err) {
+        console.error("Delete failed:", err);
+        alert("Couldn't reach the server. Is the backend running?");
+    }
+    }
+
+    // Clicking anywhere outside an open menu closes it
+    document.addEventListener("click", () => {
+    docGridEl.querySelectorAll(".doc-card-menu-dropdown.open").forEach(d => d.classList.remove("open"));
+    });
 
     async function loadDashboard() {
     loadingEl.style.display = "flex";

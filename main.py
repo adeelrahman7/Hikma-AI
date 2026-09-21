@@ -225,6 +225,17 @@ class StudyMaterialRequest(BaseModel):
             return re.sub(r"[^\w\s\-]", "", v)
         return v
 
+class RenameDocumentRequest(BaseModel):
+    new_filename: str = Field(..., min_length=1, max_length=255)
+
+    @validator("new_filename")
+    def sanitize_filename(cls, v):
+        v = v.strip()
+        v = re.sub(r"[<>:\"/\\|?*\x00-\x1f]", "", v)  # strip characters unsafe in filenames
+        if not v:
+            raise ValueError("Filename can't be empty.")
+        return v
+
 class ChatRequest(BaseModel):
     document_id: str = Field(..., min_length=32, max_length=32)
     question: str = Field(..., min_length=3, max_length=500)
@@ -1194,6 +1205,29 @@ Answer:"""
             "confidence_score": float(scores[0][0]),
             "sources_used": len(indices[0])
             }
+
+# Endpoint to rename an uploaded document
+# updates the display filename in-memory and mirrors it to SQLite
+@app.patch("/documents/{document_id}", dependencies=[Depends(verify_api_key)])
+@limiter.limit("20/minute") # limit to 20 rename requests per minute
+def rename_document(request: Request, document_id: str, body: RenameDocumentRequest):
+    """ Rename an uploaded document's display filename. """
+    logger.info(f"Rename request for Document ID: {document_id}")
+
+    if document_id not in documents_db:
+        logger.warning(f"Document not found for rename - ID: {document_id}")
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    old_filename = documents_db[document_id]["filename"]
+    documents_db[document_id]["filename"] = body.new_filename
+    save_document_to_db(document_id, documents_db[document_id])
+
+    logger.info(f"Document renamed - ID: {document_id}, '{old_filename}' -> '{body.new_filename}'")
+    return {
+        "id": document_id,
+        "filename": body.new_filename,
+        "message": f"Document renamed to '{body.new_filename}'.",
+    }
 
 # Endpoint to delete an uploaded document
 # removes document and its data from in-memory db
