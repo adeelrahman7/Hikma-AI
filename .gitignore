@@ -22,6 +22,7 @@ faiss.index
 # Data files (can be large)
 *.parquet
 learning_log.json
+documents.db
 
 # OS files
 .DS_Store

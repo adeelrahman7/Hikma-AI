@@ -318,21 +318,34 @@ Main Hero Section
 /* Call to Action Button (Default visible state for study/generate buttons) */
 .cta-btn {
   display: inline-block;
-  padding: 14px 32px;
-  background: #000000;
+  padding: 10px 24px;
+  background-image: linear-gradient(
+    90deg,
+    #5227FF,
+    #a99fff,
+    #841198,
+    #d00494,
+    #ec484e,
+    #5227FF
+  );
+  background-size: 200% 100%;
   color: #ffffff;
   text-decoration: none;
-  border-radius: 8px;
+  border-radius: 999px;
+  font-family: 'Readex Pro', sans-serif;
   font-weight: 600;
   border: none;
   cursor: pointer;
-  font-size: 1rem;
+  font-size: 0.9rem;
   opacity: 1;
-  transition: opacity 0.2s ease, transform 0.15s ease;
+  box-shadow: 0 6px 18px rgba(82, 39, 255, 0.28);
+  animation: moveGradient 12s linear infinite;
+  transition: opacity 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease;
 }
 
 .cta-btn:hover {
-  opacity: 0.85;
+  opacity: 0.92;
+  box-shadow: 0 8px 22px rgba(82, 39, 255, 0.36);
 }
 
 .cta-btn:active {
@@ -611,6 +624,7 @@ Flashcards
   min-height: 500px;
   max-height: 70vh;
   overflow-y: auto;
+  overflow-x: hidden;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 32px;
@@ -641,6 +655,14 @@ Flashcards
   font-weight: 600;
   margin-bottom: 24px;
   line-height: 1.4;
+  /* Long unbroken text (a filename full of underscores, a long term with
+     no spaces) has no natural break point and was overflowing sideways —
+     forcing a horizontal scrollbar instead of wrapping. This makes it wrap
+     within the card like any normal text. */
+  overflow-wrap: break-word;
+  word-break: break-word;
+  hyphens: auto;
+  max-width: 100%;
 }
 
 /* Flipped: show only the answer, not the question above it */
@@ -652,6 +674,10 @@ Flashcards
   font-size: 1.15rem;
   color: #888;
   line-height: 1.6;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  hyphens: auto;
+  max-width: 100%;
 }
 
 .flashcard.show-answer .flashcard-answer {
@@ -1044,18 +1070,36 @@ Practice Questions
 }
 
 .check-btn {
-  padding: 10px 20px;
-  background: var(--ink);
+  padding: 8px 18px;
+  background-image: linear-gradient(
+    90deg,
+    #5227FF,
+    #a99fff,
+    #841198,
+    #d00494,
+    #ec484e,
+    #5227FF
+  );
+  background-size: 200% 100%;
   color: #fff;
   border: none;
   border-radius: 999px;
+  font-family: 'Readex Pro', sans-serif;
   font-weight: 600;
-  font-size: 0.9rem;
+  font-size: 0.82rem;
   cursor: pointer;
+  box-shadow: 0 6px 18px rgba(82, 39, 255, 0.28);
+  animation: moveGradient 12s linear infinite;
+  transition: opacity 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease;
 }
 
 .check-btn:hover {
-  opacity: 0.85;
+  opacity: 0.92;
+  box-shadow: 0 8px 22px rgba(82, 39, 255, 0.36);
+}
+
+.check-btn:active {
+  transform: translateY(1px);
 }
 
 .model-answer {
@@ -1179,16 +1223,35 @@ Practice Questions
 
 .results-actions .question-nav-btn {
   border: none;
-  background: #eee;
-  padding: 10px 20px;
+  background-image: linear-gradient(
+    90deg,
+    #5227FF,
+    #a99fff,
+    #841198,
+    #d00494,
+    #ec484e,
+    #5227FF
+  );
+  background-size: 200% 100%;
+  color: #fff;
+  padding: 8px 18px;
   border-radius: 999px;
+  font-family: 'Readex Pro', sans-serif;
   font-weight: 600;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   cursor: pointer;
+  box-shadow: 0 6px 18px rgba(82, 39, 255, 0.28);
+  animation: moveGradient 12s linear infinite;
+  transition: opacity 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease;
 }
 
 .results-actions .question-nav-btn:hover {
-  background: #e0e0e0;
+  opacity: 0.92;
+  box-shadow: 0 8px 22px rgba(82, 39, 255, 0.36);
+}
+
+.results-actions .question-nav-btn:active {
+  transform: translateY(1px);
 }
 
 /* =====================

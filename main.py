@@ -23,6 +23,7 @@ from io import BytesIO
 import hashlib
 import random
 from datetime import datetime
+import sqlite3
 
 # adding limits to request size (to prevent overloads)
 from slowapi import Limiter
@@ -141,8 +142,68 @@ async def favicon():
 # and a directory for storing the uploaded files
 embedder = None
 documents_db = {}
-UPLOAD_DIR = "uploads"   
+UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# --- Persistent storage for uploaded documents ---
+# documents_db above is still the in-memory store everything reads from
+# during a request — that doesn't change. What's new is that every write to
+# it is now mirrored to this SQLite file, and on startup we reload from it
+# and rebuild the FAISS index for each document (cheap — it's just
+# re-embedding text that's already extracted). This is what makes uploads
+# survive a server restart instead of vanishing every time uvicorn reloads.
+DB_PATH = "documents.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS documents (
+            id TEXT PRIMARY KEY,
+            filename TEXT NOT NULL,
+            upload_date TEXT NOT NULL,
+            text TEXT NOT NULL,
+            chunks TEXT NOT NULL,
+            topics TEXT NOT NULL,
+            page_count INTEGER NOT NULL,
+            text_length INTEGER NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def save_document_to_db(doc_id: str, doc: dict):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """INSERT OR REPLACE INTO documents
+           (id, filename, upload_date, text, chunks, topics, page_count, text_length)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            doc_id,
+            doc["filename"],
+            doc["upload_date"],
+            doc["text"],
+            json.dumps(doc["chunks"]),
+            json.dumps(doc["topics"]),
+            doc["page_count"],
+            doc["text_length"],
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+def delete_document_from_db(doc_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+    conn.commit()
+    conn.close()
+
+def load_all_documents_from_db() -> list:
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        "SELECT id, filename, upload_date, text, chunks, topics, page_count, text_length FROM documents"
+    ).fetchall()
+    conn.close()
+    return rows
 
 # Pydantic models for request bodies (Chat requests, flashcards, questions, study materials, document metadata)
 # these define the structure of the data we expect in requests and return in responses
@@ -285,13 +346,45 @@ class DocumentInfo(BaseModel):
     text_length: str
     topics: List[str]
 
-# startup event to load the embedder model
+# startup event to load the embedder model and restore any previously
+# uploaded documents from disk, so they survive a server restart instead
+# of disappearing every time uvicorn reloads.
 @app.on_event("startup")
 async def startup_event():
     global embedder
     print("Loading embedder model...")
     embedder = SentenceTransformer('all-MiniLM-L6-v2')
     print("Embedder model loaded.")
+
+    init_db()
+    rows = load_all_documents_from_db()
+    if rows:
+        print(f"Restoring {len(rows)} previously uploaded document(s) from disk...")
+    for doc_id, filename, upload_date, text, chunks_json, topics_json, page_count, text_length in rows:
+        try:
+            chunks = json.loads(chunks_json)
+            topics = json.loads(topics_json)
+            # Re-embedding is the only "recomputation" happening here — the
+            # extracted text, chunks and topics are loaded as-is from SQLite;
+            # only the FAISS index itself (which can't be stored as plain
+            # rows) is rebuilt from those chunks.
+            index, embeddings = create_faiss_index(chunks)
+            documents_db[doc_id] = {
+                "id": doc_id,
+                "filename": filename,
+                "upload_date": upload_date,
+                "text": text,
+                "chunks": chunks,
+                "index": index,
+                "embeddings": embeddings,
+                "topics": topics,
+                "page_count": page_count,
+                "text_length": text_length,
+            }
+        except Exception as e:
+            print(f"Failed to restore document {doc_id} ({filename}): {e}")
+    if rows:
+        print(f"Restored {len(documents_db)} document(s).")
 
 # helper functions - converting binary files into raw text (critical for embedding and indexing)
 # Extract text from PDF files
@@ -634,6 +727,11 @@ async def upload_document(request: Request, file: UploadFile = File(...)):
             "text_length": len(text),
         }
 
+        # Mirror to SQLite so this document survives a server restart —
+        # save_document_to_db() only writes the plain-data fields (not the
+        # FAISS index/embeddings, which get rebuilt from chunks on startup).
+        save_document_to_db(doc_id, documents_db[doc_id])
+
         logger.info(f"Document uploaded successfully - ID: {doc_id}, Filename: {file.filename}")
 
         return {"document_id": doc_id,
@@ -957,6 +1055,15 @@ Extract every distinct term you can find in this section.
 Section:
 {chunk}
 """
+        # A fixed num_predict kept getting outpaced by unusually dense
+        # sections (lots of short terms/definitions packed together), which
+        # cuts the model off mid-JSON and fails validation every retry — the
+        # "EOF while parsing a string" errors. Scale the output budget with
+        # how much text is actually in this section instead of guessing one
+        # fixed number for every document.
+        section_word_count = len(chunk.split())
+        extraction_num_predict = min(3000, max(1400, section_word_count * 6))
+
         section_facts = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
             response_text = await generate_with_ollama(
@@ -964,12 +1071,8 @@ Section:
                 format_schema=ExtractedFacts.model_json_schema(),
                 options_override={
                     'temperature': 0.2,   # very low — extraction should be literal, not creative
-                    # 600 was too tight for dense sections — the model was
-                    # hitting this limit mid-JSON and getting cut off
-                    # (causing "EOF while parsing a string" validation errors
-                    # on every retry). Raised so extraction can actually finish.
-                    'num_predict': 1400,
-                    'num_ctx': 4096,
+                    'num_predict': extraction_num_predict,
+                    'num_ctx': 6144,
                 }
             )
 
@@ -1106,7 +1209,8 @@ def delete_document(request: Request, document_id: str):
     
     filename = documents_db[document_id]["filename"]
     del documents_db[document_id]
-    
+    delete_document_from_db(document_id)
+
     logger.info(f"Document deleted successfully - ID: {document_id}, Filename: {filename}")
     return {"message": f"Document '{filename}' and its data have been deleted."}
 
